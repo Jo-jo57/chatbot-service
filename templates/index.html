@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AI Assistant </title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container" role="application" aria-label="AI Assistant UI">
+    <header class="header">
+      <div class="back" title="Back">&#10094;</div>
+      <div class="avatar" aria-hidden="true"><div class="logo"></div></div>
+      <div class="title-block">
+        <div class="title">AI Assistant</div>
+        <div class="status"><span class="dot" aria-hidden="true"></span>Online - Ready to help</div>
+      </div>
+    </header>
+
+    <main class="content">
+      <div class="try-heading">Try asking</div>
+
+      <div class="chips" id="chips">
+        <div class="chip">How do I register for courses?</div>
+        <div class="chip">Where is the CoICT building?</div>
+        <div class="chip">What is the exam timetable?</div>
+        <div class="chip">How to access my results?</div>
+        <div class="chip">Where is the Health Center?</div>
+        <div class="chip">FYP submission guidelines?</div>
+      </div>
+
+      <div class="assistant-entry">
+        <div class="assistant-icon" aria-hidden="true">★</div>
+        <div class="message" id="assistantMessage">
+          Hi there! I'm the UDSM Virtual Assistant. I can help you with academic procedures, campus navigation, deadlines, and more. How can I assist you today?
+        </div>
+      </div>
+
+      <div class="timestamp" id="time">13:55</div>
+
+      <div style="height:40px"></div>
+    </main>
+
+    <footer class="footer">
+      <div class="input">
+        <input id="userInput" type="text" placeholder="Type your message..." aria-label="Type your message" />
+      </div>
+      <button class="send-btn" id="sendBtn" aria-label="Send message">
+        &#128640;
+      </button>
+    </footer>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
