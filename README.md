@@ -1,7 +1,7 @@
 # Chatbot API Service
 
 # Overview
-This project is a lightweight chatbot API service designed to handle and respond to user queries. It processes incoming messages and returns appropriate responses through a simple REST API.
+This project is a chatbot API service designed to handle and respond to user queries. It processes incoming messages and returns appropriate responses through a simple REST API.
 
 The chatbot is being developed as part of a larger system and is intended to be integrated with a frontend application for real-time conversational interaction.
 
