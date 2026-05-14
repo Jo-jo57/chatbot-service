@@ -1,2 +1,13 @@
 __pycache__/
 *.pyc
+.venv/
+.venv311/
+venv/
+uploads/
+chroma_store/
+chroma_cache/
+flask.log
+flask-error.log
+server.log
+server.out.log
+server.err.log

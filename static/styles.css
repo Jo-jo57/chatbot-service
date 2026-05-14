@@ -146,6 +146,7 @@ html,body{height:100%;margin:0;background:var(--bg);color:#0f172a}
   font-size:16px;
   line-height:1.5;
   font-weight:600;
+  white-space:pre-wrap;
 }
 
 /* timestamp styling */
@@ -196,7 +197,12 @@ html,body{height:100%;margin:0;background:var(--bg);color:#0f172a}
   border:0;
   cursor:pointer;
   box-shadow:0 8px 26px rgba(24,79,214,0.22);
-  font-size:20px;
+  font-size:13px;
+  font-weight:800;
+}
+.send-btn:disabled{
+  opacity:.65;
+  cursor:not-allowed;
 }
 
 /* responsive tweaks */
