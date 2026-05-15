@@ -18,17 +18,20 @@ logging.basicConfig(level=logging.INFO)
 # in ChromaDB when the Flask app starts.
 DOCUMENT_PATHS = [
     "documents/Registration guide.docx",
+    "documents/training guide.docx",
 ]
 
 
 def load_configured_documents():
     loaded_documents = []
+    configured_source_paths = []
     base_directory = Path(__file__).resolve().parent
 
     for document_path in DOCUMENT_PATHS:
         path = Path(document_path)
         if not path.is_absolute():
             path = base_directory / path
+        configured_source_paths.append(str(path.resolve()))
 
         try:
             result = rag_service.ingest_path(path)
@@ -43,7 +46,7 @@ def load_configured_documents():
 
     if loaded_documents:
         purged_chunks = rag_service.purge_except_source_paths(
-            [document["source_path"] for document in loaded_documents]
+            configured_source_paths
         )
         if purged_chunks:
             logging.info("Removed %s chunks from unconfigured documents", purged_chunks)
@@ -60,7 +63,7 @@ def get_current_time():
 
 
 def generate_fallback_response():
-    return "I do not have enough information to answer that question."
+    return "I do not have enough information in the uploaded documents to answer that question."
 
 @app.route('/')
 def home():
