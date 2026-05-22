@@ -41,6 +41,7 @@ The chatbot is being developed as part of a larger system and is intended to be 
 
 # RAG Endpoints
 - `GET /documents/status`: returns the number of stored chunks
+- `POST /documents/upload`: uploads one or more `.pdf`, `.docx`, `.txt`, `.md`, or `.csv` files using the `files` form field
 - `POST /chat`: retrieves matching chunks and passes them to the LLM placeholder
 
 The current Ollama model is configured in `RAGService` as `deepseek-r1:1.5b`. Make sure Ollama is running locally and the model is pulled before asking document questions.
@@ -54,3 +55,5 @@ DOCUMENT_PATHS = [
 ```
 
 Project documents live in the `documents/` folder.
+
+PDFs in `documents/` with `almanac`, `prospectus`, or `training` in the filename are discovered automatically at startup. Large PDFs are split into smaller page-aware chunks, and source metadata includes chunk number, page range, and detected section where available.

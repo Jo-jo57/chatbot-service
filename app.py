@@ -7,6 +7,7 @@ from pathlib import Path
 
 # Initialize Flask app
 app = Flask(__name__)
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 CORS(app)
 
 rag_service = RAGService()
@@ -19,18 +20,50 @@ logging.basicConfig(level=logging.INFO)
 DOCUMENT_PATHS = [
     "documents/Registration guide.docx",
     "documents/training guide.docx",
+    "documents/fyp and pt.docx",
+    "documents/ALMANAC_2025-2026.pdf",
+    "documents/UNDERGRADUATE_PROSPECTUS_2025-2026.pdf",
+]
+
+DOCUMENT_GLOBS = [
+    "documents/*almanac*.pdf",
+    "documents/*prospectus*.pdf",
+    "documents/*training*.pdf",
 ]
 
 
-def load_configured_documents():
-    loaded_documents = []
-    configured_source_paths = []
+def configured_document_paths():
     base_directory = Path(__file__).resolve().parent
+    paths = []
 
     for document_path in DOCUMENT_PATHS:
         path = Path(document_path)
         if not path.is_absolute():
             path = base_directory / path
+        paths.append(path)
+
+    for document_glob in DOCUMENT_GLOBS:
+        for path in base_directory.glob(document_glob):
+            paths.append(path)
+
+    seen = set()
+    unique_paths = []
+    for path in paths:
+        resolved_path = str(path.resolve())
+        if resolved_path in seen:
+            continue
+        seen.add(resolved_path)
+        unique_paths.append(path)
+
+    return unique_paths
+
+
+def load_configured_documents():
+    loaded_documents = []
+    failed_documents = []
+    configured_source_paths = []
+
+    for path in configured_document_paths():
         configured_source_paths.append(str(path.resolve()))
 
         try:
@@ -42,7 +75,13 @@ def load_configured_documents():
                 result["chunks_added"],
             )
         except Exception as e:
-            logging.error(f"Error loading configured document {path}: {str(e)}")
+            error_message = str(e)
+            failed_documents.append({
+                "filename": path.name,
+                "source_path": str(path.resolve()),
+                "error": error_message,
+            })
+            logging.error(f"Error loading configured document {path}: {error_message}")
 
     if loaded_documents:
         purged_chunks = rag_service.purge_except_source_paths(
@@ -51,11 +90,11 @@ def load_configured_documents():
         if purged_chunks:
             logging.info("Removed %s chunks from unconfigured documents", purged_chunks)
 
-    return loaded_documents
+    return loaded_documents, failed_documents
 
 
-loaded_documents = load_configured_documents()
-RAG_DISTANCE_THRESHOLD = 2.2
+loaded_documents, failed_documents = load_configured_documents()
+RAG_DISTANCE_THRESHOLD = 2.8
 
 
 def get_current_time():
@@ -124,8 +163,36 @@ def document_status():
     return jsonify({
         'stored_chunks': rag_service.count(),
         'configured_documents': loaded_documents,
+        'failed_documents': failed_documents,
         'timestamp': get_current_time()
     })
+
+@app.route('/documents/upload', methods=['POST'])
+def upload_documents():
+    """Upload one or more documents and add their chunks to the vector database."""
+    uploaded_files = request.files.getlist('files') or request.files.getlist('file')
+    if not uploaded_files:
+        return jsonify({'error': 'No files were uploaded. Use the form field "files".'}), 400
+
+    loaded = []
+    failed = []
+    for uploaded_file in uploaded_files:
+        if not uploaded_file or not uploaded_file.filename:
+            continue
+        try:
+            loaded.append(rag_service.ingest_file(uploaded_file))
+        except Exception as e:
+            failed.append({
+                'filename': uploaded_file.filename,
+                'error': str(e),
+            })
+
+    return jsonify({
+        'loaded_documents': loaded,
+        'failed_documents': failed,
+        'stored_chunks': rag_service.count(),
+        'timestamp': get_current_time(),
+    }), 207 if failed and loaded else 400 if failed else 200
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -135,6 +202,7 @@ def health_check():
         'service': 'Campus Assistant Chatbot',
         'stored_chunks': rag_service.count(),
         'configured_documents': len(loaded_documents),
+        'failed_documents': failed_documents,
         'timestamp': get_current_time()
     })
 
@@ -157,4 +225,4 @@ def quick_help():
         return jsonify({'error': 'Unable to load quick help topics'}), 500
 
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=5000, use_reloader=False)
