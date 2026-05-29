@@ -267,6 +267,100 @@ class RAGService:
             "context": "\n\n".join(chunk["content"] for chunk in chunks),
         }
 
+    def chunks_for_source_path(self, source_path, limit=12):
+        stored = self.collection.get(
+            where={"source_path": str(Path(source_path).resolve())},
+            include=["documents", "metadatas"],
+        )
+        chunks = [
+            {
+                "content": document,
+                "metadata": metadata,
+                "distance": 0,
+                "keyword_score": 0,
+            }
+            for document, metadata in zip(
+                stored.get("documents", []),
+                stored.get("metadatas", []),
+            )
+        ]
+        return sorted(
+            chunks,
+            key=lambda chunk: chunk["metadata"].get("chunk_index", 0),
+        )[:limit]
+
+    def summarize_chunks(self, chunks):
+        if not chunks:
+            return "I could not find readable text in the uploaded document."
+
+        combined_text = " ".join(chunk["content"] for chunk in chunks)
+        sections = [
+            section.strip()
+            for section in re.findall(r"\[SECTION\]\s*([^.\[]+)", combined_text)
+            if section.strip()
+        ]
+        qa_pairs = self._qa_pairs(combined_text)
+
+        points = []
+        for section in sections[:3]:
+            points.append(f"The document includes {section}.")
+
+        for question, answer in qa_pairs[:3]:
+            cleaned_question = self._clean_answer_text(question).rstrip(".")
+            cleaned_answer = self._clean_answer_text(answer)
+            points.append(f"{cleaned_question}: {cleaned_answer}")
+
+        if not points:
+            sentences = [
+                self._clean_answer_text(sentence)
+                for sentence in re.split(r"(?<=[.!?])\s+", combined_text)
+                if len(sentence.strip()) > 40
+            ]
+            points = sentences[:4]
+
+        if not points:
+            return "The uploaded document contains readable text, but I could not create a useful summary from it."
+
+        return "\n\n".join(
+            f"{index}. {point}"
+            for index, point in enumerate(points[:5], start=1)
+        )
+
+    def suggest_questions_from_chunks(self, chunks):
+        if not chunks:
+            return "I could not find readable text in the uploaded document."
+
+        combined_text = " ".join(chunk["content"] for chunk in chunks)
+        qa_questions = []
+        for question, _ in self._qa_pairs(combined_text):
+            cleaned_question = self._clean_answer_text(question).rstrip(".")
+            if cleaned_question and cleaned_question not in qa_questions:
+                qa_questions.append(cleaned_question)
+
+        if qa_questions:
+            questions = qa_questions[:8]
+        else:
+            sections = [
+                section.strip()
+                for section in re.findall(r"\[SECTION\]\s*([^.\[]+)", combined_text)
+                if section.strip()
+            ]
+            questions = [
+                f"What should I know about {section}?"
+                for section in sections[:8]
+            ]
+
+        if not questions:
+            return (
+                "The uploaded document is readable, but I could not identify clear "
+                "student questions from it yet."
+            )
+
+        return "You can ask questions such as:\n\n" + "\n\n".join(
+            f"{index}. {question}"
+            for index, question in enumerate(questions, start=1)
+        )
+
     def generate_llm_answer(self, query, context, retrieved_chunks=None):
         if not context:
             return (

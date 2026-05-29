@@ -88,6 +88,7 @@ documentUpload.addEventListener('change', async () => {
   const uploadEntry = appendAssistantReply(`Uploading ${files.length} document${files.length === 1 ? '' : 's'}...`);
   const formData = new FormData();
   files.forEach(file => formData.append('files', file));
+  documentUpload.disabled = true;
 
   try {
     const response = await fetch('/documents/upload', {
@@ -99,16 +100,30 @@ documentUpload.addEventListener('change', async () => {
     const failedCount = (data.failed_documents || []).length;
 
     if (!response.ok && !loadedCount) {
-      uploadEntry.querySelector('.message').textContent = data.error || 'The document upload failed.';
+      const failureDetails = (data.failed_documents || [])
+        .map(item => `${item.filename}: ${item.error}`)
+        .join('\n');
+      uploadEntry.querySelector('.message').textContent =
+        failureDetails || data.error || 'The document upload failed.';
       return;
     }
 
-    uploadEntry.querySelector('.message').textContent =
-      `Uploaded ${loadedCount} document${loadedCount === 1 ? '' : 's'} into searchable chunks.` +
-      (failedCount ? ` ${failedCount} failed.` : '');
+    const loadedDetails = (data.loaded_documents || [])
+      .map(item => `${item.filename}: ${item.chunks_added} chunk${item.chunks_added === 1 ? '' : 's'}`)
+      .join('\n');
+    const failedDetails = (data.failed_documents || [])
+      .map(item => `${item.filename}: ${item.error}`)
+      .join('\n');
+
+    uploadEntry.querySelector('.message').textContent = [
+      `Uploaded ${loadedCount} document${loadedCount === 1 ? '' : 's'} into searchable chunks.`,
+      loadedDetails,
+      failedCount ? `${failedCount} failed:\n${failedDetails}` : ''
+    ].filter(Boolean).join('\n\n');
   } catch (error) {
     uploadEntry.querySelector('.message').textContent = 'Unable to upload the selected documents.';
   } finally {
+    documentUpload.disabled = false;
     documentUpload.value = '';
     input.focus();
   }
