@@ -1,6 +1,7 @@
 import csv
 import hashlib
 import math
+import os
 import re
 import threading
 import uuid
@@ -8,7 +9,7 @@ from pathlib import Path
 from zipfile import BadZipFile, is_zipfile
 
 import chromadb
-from ollama import chat
+from ollama import Client
 from werkzeug.utils import secure_filename
 from chromadb.config import Settings
 
@@ -230,6 +231,15 @@ class RAGService:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.llm_model_name = llm_model_name
+        self.ollama_timeout_seconds = float(os.getenv("OLLAMA_REQUEST_TIMEOUT", "7"))
+        self.ollama_client = Client(
+            host=os.getenv("OLLAMA_HOST"),
+            timeout=self.ollama_timeout_seconds,
+        )
+        self._keyword_index = None
+        self._keyword_index_count = None
+        self._keyword_index_lock = threading.Lock()
+        self._alias_cache = {}
 
         self.client = chromadb.PersistentClient(
             path=persist_directory,
@@ -306,6 +316,7 @@ class RAGService:
             documents=chunks,
             metadatas=metadatas,
         )
+        self._clear_keyword_index()
 
         return {
             "document_id": document_id,
@@ -519,22 +530,26 @@ class RAGService:
             "Answer only the user's exact question using only the document context. "
             "Do not add extra steps, advice, links, or related information unless the "
             "user asks for them. If the context does not contain the answer, say the "
-            "uploaded documents do not provide enough information. Keep the answer "
+            "uploaded documents do not provide enough information. Do not include "
+            "chain-of-thought, hidden reasoning, or <think> sections. Keep the answer "
             "under 3 short sentences.\n\n"
             f"Document context:\n{context}\n\n"
             f"User question: {query}"
         )
 
         try:
-            response = chat(
+            response = self.ollama_client.chat(
                 model=self.llm_model_name,
                 messages=[{"role": "user", "content": prompt}],
                 options={
                     "temperature": 0.2,
-                    "num_predict": 90,
+                    "num_ctx": 2048,
+                    "num_predict": 70,
+                    "top_p": 0.85,
                 },
+                keep_alive="5m",
             )
-            generated_answer = response.message.content.strip()
+            generated_answer = self._remove_thinking_text(response.message.content)
             if generated_answer:
                 return generated_answer
             return self.extractive_answer(query, retrieved_chunks or [])
@@ -548,7 +563,7 @@ class RAGService:
             )
 
     def format_answer(self, answer, query=""):
-        cleaned_answer = self._clean_answer_text(answer)
+        cleaned_answer = self._clean_answer_text(self._remove_thinking_text(answer))
         if cleaned_answer in {
             INSUFFICIENT_INFORMATION_RESPONSE,
             "I could not find matching information in the uploaded document.",
@@ -567,6 +582,12 @@ class RAGService:
             return qa_answer
 
         return cleaned_answer
+
+    def _remove_thinking_text(self, text):
+        cleaned = str(text or "")
+        cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+        cleaned = re.sub(r"^\s*(?:thinking|reasoning)\s*:.*?(?=\n\s*\n|$)", "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+        return cleaned.strip()
 
     def _clean_answer_text(self, text):
         cleaned = " ".join(str(text or "").split())
@@ -861,9 +882,10 @@ class RAGService:
             return result["answer"]
 
         chunks = retrieved_chunks or self.retrieve(query)
-        return {
-            "response": self.extractive_answer(query, chunks),
-            "sources": [
+        response = self.format_answer(self.extractive_answer(query, chunks), query=query)
+        sources = []
+        if response != INSUFFICIENT_INFORMATION_RESPONSE:
+            sources = [
                 {
                     "filename": chunk["metadata"].get("filename"),
                     "chunk_index": chunk["metadata"].get("chunk_index"),
@@ -872,7 +894,11 @@ class RAGService:
                     "distance": float(chunk["distance"]),
                 }
                 for chunk in chunks
-            ],
+            ]
+
+        return {
+            "response": response,
+            "sources": sources,
             "context": "\n\n".join(chunk["content"] for chunk in chunks),
         }
 
@@ -1225,15 +1251,18 @@ class RAGService:
             return []
 
         query_text = " ".join(re.findall(r"\w+", query.lower()))
-        stored = self.collection.get(include=["documents", "metadatas"])
         scored_chunks = []
-        for document, metadata in zip(stored.get("documents", []), stored.get("metadatas", [])):
-            document_words = self._meaningful_words(document, stop_words)
-            matched_words = query_words & document_words
-            matched_words |= self._alias_matches(query_words, document_words)
+        for item in self._get_keyword_index():
+            document = item["content"]
+            metadata = item["metadata"]
+            document_words = item["words"]
+            matched_words = query_words & item["searchable_words"]
+            for query_word in query_words - matched_words:
+                if self._expanded_aliases(query_word) & document_words:
+                    matched_words.add(query_word)
             score = len(matched_words)
-            document_text = " ".join(re.findall(r"\w+", document.lower()))
-            filename = metadata.get("filename", "").lower()
+            document_text = item["text"]
+            filename = item["filename"]
 
             if "register" in query_words and filename == "registration guide.docx":
                 score += 8
@@ -1261,6 +1290,50 @@ class RAGService:
             reverse=True,
         )[:top_k]
 
+    def _get_keyword_index(self):
+        current_count = self.collection.count()
+        if (
+            self._keyword_index is not None
+            and self._keyword_index_count == current_count
+        ):
+            return self._keyword_index
+
+        with self._keyword_index_lock:
+            if (
+                self._keyword_index is not None
+                and self._keyword_index_count == current_count
+            ):
+                return self._keyword_index
+
+            stored = self.collection.get(include=["documents", "metadatas"])
+            keyword_index = []
+            for document, metadata in zip(
+                stored.get("documents", []),
+                stored.get("metadatas", []),
+            ):
+                document_words = self._meaningful_words(document, STOP_WORDS)
+                alias_words = set()
+                for word in document_words:
+                    alias_words |= self._expanded_aliases(word)
+                keyword_index.append(
+                    {
+                        "content": document,
+                        "metadata": metadata,
+                        "words": document_words,
+                        "searchable_words": document_words | alias_words,
+                        "text": " ".join(re.findall(r"\w+", document.lower())),
+                        "filename": metadata.get("filename", "").lower(),
+                    }
+                )
+            self._keyword_index = keyword_index
+            self._keyword_index_count = current_count
+            return self._keyword_index
+
+    def _clear_keyword_index(self):
+        with self._keyword_index_lock:
+            self._keyword_index = None
+            self._keyword_index_count = None
+
     def count(self):
         return self.collection.count()
 
@@ -1275,6 +1348,7 @@ class RAGService:
 
         if ids_to_delete:
             self.collection.delete(ids=ids_to_delete)
+            self._clear_keyword_index()
 
         return len(ids_to_delete)
 

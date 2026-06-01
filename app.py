@@ -141,6 +141,7 @@ loaded_documents, failed_documents, uploaded_documents, failed_uploaded_document
     load_configured_documents()
 )
 RAG_DISTANCE_THRESHOLD = 2.8
+OLLAMA_TIMEOUT_SECONDS = 7
 
 
 def get_current_time():
@@ -256,9 +257,10 @@ def chat():
                     }
                 })
 
-            rag_result = rag_service.answer_from_document(
+            rag_result = rag_service.answer_with_timeout(
                 user_message,
                 retrieved_chunks=retrieved_chunks,
+                timeout_seconds=OLLAMA_TIMEOUT_SECONDS,
             )
             response = rag_result['response']
             sources = rag_result['sources']
@@ -276,9 +278,10 @@ def chat():
         best_distance = min((chunk["distance"] for chunk in retrieved_chunks), default=None)
 
         if best_distance is not None and best_distance <= RAG_DISTANCE_THRESHOLD:
-            rag_result = rag_service.answer_from_document(
+            rag_result = rag_service.answer_with_timeout(
                 user_message,
                 retrieved_chunks=retrieved_chunks,
+                timeout_seconds=OLLAMA_TIMEOUT_SECONDS,
             )
             response = rag_result['response']
             sources = rag_result['sources']
