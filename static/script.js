@@ -2,7 +2,6 @@ const chips = document.getElementById('chips');
 const input = document.getElementById('userInput');
 const sendBtn = document.getElementById('sendBtn');
 const content = document.querySelector('.content');
-const documentUpload = document.getElementById('documentUpload');
 
 chips.addEventListener('click', e => {
   const chip = e.target.closest('.chip');
@@ -80,54 +79,6 @@ async function sendMessage() {
 }
 
 sendBtn.addEventListener('click', sendMessage);
-
-documentUpload.addEventListener('change', async () => {
-  const files = Array.from(documentUpload.files || []);
-  if (!files.length) return;
-
-  const uploadEntry = appendAssistantReply(`Uploading ${files.length} document${files.length === 1 ? '' : 's'}...`);
-  const formData = new FormData();
-  files.forEach(file => formData.append('files', file));
-  documentUpload.disabled = true;
-
-  try {
-    const response = await fetch('/documents/upload', {
-      method: 'POST',
-      body: formData
-    });
-    const data = await response.json();
-    const loadedCount = (data.loaded_documents || []).length;
-    const failedCount = (data.failed_documents || []).length;
-
-    if (!response.ok && !loadedCount) {
-      const failureDetails = (data.failed_documents || [])
-        .map(item => `${item.filename}: ${item.error}`)
-        .join('\n');
-      uploadEntry.querySelector('.message').textContent =
-        failureDetails || data.error || 'The document upload failed.';
-      return;
-    }
-
-    const loadedDetails = (data.loaded_documents || [])
-      .map(item => `${item.filename}: ${item.chunks_added} chunk${item.chunks_added === 1 ? '' : 's'}`)
-      .join('\n');
-    const failedDetails = (data.failed_documents || [])
-      .map(item => `${item.filename}: ${item.error}`)
-      .join('\n');
-
-    uploadEntry.querySelector('.message').textContent = [
-      `Uploaded ${loadedCount} document${loadedCount === 1 ? '' : 's'} into searchable chunks.`,
-      loadedDetails,
-      failedCount ? `${failedCount} failed:\n${failedDetails}` : ''
-    ].filter(Boolean).join('\n\n');
-  } catch (error) {
-    uploadEntry.querySelector('.message').textContent = 'Unable to upload the selected documents.';
-  } finally {
-    documentUpload.disabled = false;
-    documentUpload.value = '';
-    input.focus();
-  }
-});
 
 input.addEventListener('keydown', e => {
   if (e.key === 'Enter') {

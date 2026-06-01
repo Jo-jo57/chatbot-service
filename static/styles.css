@@ -167,23 +167,6 @@ html,body{height:100%;margin:0;background:var(--bg);color:#0f172a}
   border-top:1px solid rgba(2,6,23,0.04);
   box-sizing:border-box;
 }
-.upload-btn{
-  width:52px;
-  height:52px;
-  border-radius:12px;
-  background:#ffffff;
-  border:1px solid rgba(15,23,42,0.08);
-  color:var(--blue);
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  cursor:pointer;
-  box-shadow:0 6px 18px rgba(15,23,42,0.04);
-  font-size:26px;
-  font-weight:800;
-  line-height:1;
-  flex-shrink:0;
-}
 .input{
   background: #f6f8fa;
   padding:12px 14px;
