@@ -22,6 +22,7 @@ DOCUMENT_PATHS = [
     "documents/Registration guide.docx",
     "documents/training guide.docx",
     "documents/fyp and pt.docx",
+    "documents/FREQUENTLY ASKED QUESTIONS DURING ADMISSION (1).docx",
     "documents/ALMANAC_2025-2026.pdf",
     "documents/UNDERGRADUATE_PROSPECTUS_2025-2026.pdf",
 ]

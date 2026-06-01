@@ -369,12 +369,14 @@ class RAGService:
             for chunk in retrieved_chunks
         )
 
+        response = self.generate_llm_answer(
+            query=query,
+            context=context,
+            retrieved_chunks=retrieved_chunks,
+        )
+
         return {
-            "response": self.generate_llm_answer(
-                query=query,
-                context=context,
-                retrieved_chunks=retrieved_chunks,
-            ),
+            "response": self.format_answer(response, query=query),
             "sources": [
                 {
                     "filename": chunk["metadata"].get("filename"),
@@ -560,6 +562,10 @@ class RAGService:
         if self._should_format_as_points(query, cleaned_answer):
             return self._format_guideline_points(cleaned_answer)
 
+        qa_answer = self._format_question_answer_pairs(cleaned_answer)
+        if qa_answer:
+            return qa_answer
+
         return cleaned_answer
 
     def _clean_answer_text(self, text):
@@ -655,6 +661,99 @@ class RAGService:
             return "\n\n".join([intro] + points if intro else points)
 
         return self._clean_answer_text(answer)
+
+    def _format_question_answer_pairs(self, answer):
+        parts = re.split(r"\s+Answer:\s*", answer)
+        if len(parts) < 2:
+            return ""
+
+        pairs = []
+        label = self._clean_answer_text(parts[0]).rstrip(".:")
+        for index, part in enumerate(parts[1:]):
+            if index < len(parts) - 2:
+                value_text, next_label = self._split_answer_from_next_label(part)
+            else:
+                value_text, next_label = part, ""
+
+            value = self._clean_answer_text(value_text)
+            if label and value:
+                pairs.append((label, value))
+            label = next_label
+
+        if not pairs:
+            return ""
+
+        if len(pairs) == 1:
+            label, value = pairs[0]
+            return f"{label}:\n{value}"
+
+        return "\n\n".join(
+            f"{index}. {label}:\n{value}"
+            for index, (label, value) in enumerate(pairs, start=1)
+        )
+
+    def _split_answer_from_next_label(self, text):
+        words = re.findall(r"\S+", text.strip())
+        if len(words) < 3:
+            return text, ""
+
+        for start in range(len(words) - 1, 0, -1):
+            suffix = words[start:]
+            if len(suffix) > 8:
+                continue
+            first_word = re.sub(r"^[^A-Za-z0-9]+|[^A-Za-z0-9]+$", "", suffix[0])
+            if not first_word[:1].isupper():
+                continue
+            label = " ".join(suffix).strip()
+            if not self._looks_like_question_label(label):
+                continue
+            while start > 0:
+                previous_word = re.sub(
+                    r"^[^A-Za-z0-9]+|[^A-Za-z0-9]+$",
+                    "",
+                    words[start - 1],
+                )
+                if (
+                    previous_word[:1].isupper()
+                    and previous_word.lower() in self._question_label_terms()
+                    and len(words[start - 1:]) <= 8
+                ):
+                    start -= 1
+                    label = " ".join(words[start:]).strip()
+                    continue
+                break
+            answer = " ".join(words[:start]).strip()
+            if answer:
+                return answer, self._clean_answer_text(label).rstrip(".:")
+
+        return text, ""
+
+    def _looks_like_question_label(self, label):
+        label_text = " ".join(re.findall(r"\w+", label.lower()))
+        label_words = label_text.split()
+        if not 2 <= len(label_words) <= 8:
+            return False
+        question_terms = {
+            *self._question_label_terms(),
+            }
+        return bool(set(label_words) & question_terms)
+
+    def _question_label_terms(self):
+        return {
+            "activation",
+            "admission",
+            "application",
+            "confirmation",
+            "control",
+            "email",
+            "invalid",
+            "link",
+            "number",
+            "paid",
+            "process",
+            "received",
+            "reflected",
+        }
 
     def _format_sectioned_guidelines(self, text):
         section_pattern = re.compile(
