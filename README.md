@@ -39,6 +39,23 @@ The chatbot is being developed as part of a larger system and is intended to be 
 
 ---
 
+# Start Flask
+Use the project Python environment so all dependencies are available:
+
+```powershell
+.\start-flask.ps1
+```
+
+Or run the interpreter directly:
+
+```powershell
+.\.venv311\Scripts\python.exe app.py
+```
+
+In VS Code, use the `Flask: app.py (.venv311)` launch configuration.
+
+---
+
 # RAG Endpoints
 - `GET /documents/status`: returns the number of stored chunks
 - `POST /documents/upload`: uploads one or more `.pdf`, `.docx`, `.txt`, `.md`, or `.csv` files using the `files` form field

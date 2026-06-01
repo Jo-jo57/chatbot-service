@@ -1,3 +1,4 @@
+import csv
 import hashlib
 import math
 import re
@@ -25,6 +26,7 @@ STOP_WORDS = {
     "building",
     "buildings",
     "can",
+    "can i",
     "center",
     "centre",
     "could",
@@ -32,8 +34,10 @@ STOP_WORDS = {
     "do",
     "does",
     "explain",
+    "give",
     "for",
     "from",
+    "help",
     "how",
     "i",
     "in",
@@ -43,8 +47,11 @@ STOP_WORDS = {
     "it",
     "located",
     "location",
+    "looking",
+    "map",
     "me",
     "my",
+    "need",
     "of",
     "on",
     "or",
@@ -56,6 +63,10 @@ STOP_WORDS = {
     "the",
     "them",
     "to",
+    "want",
+    "campus",
+    "uni",
+    "university",
     "what",
     "when",
     "where",
@@ -63,6 +74,112 @@ STOP_WORDS = {
     "who",
     "why",
     "your",
+}
+
+LOCATION_QUERY_WORDS = {
+    "direction",
+    "directions",
+    "find",
+    "get",
+    "go",
+    "located",
+    "location",
+    "near",
+    "nearby",
+    "reach",
+    "route",
+    "where",
+}
+
+NORMALIZED_WORDS = {
+    "accommodations": "hostel",
+    "accommodation": "hostel",
+    "admissions": "admission",
+    "admitted": "admission",
+    "admit": "admission",
+    "admitting": "admission",
+    "application": "apply",
+    "applications": "apply",
+    "applied": "apply",
+    "applies": "apply",
+    "applying": "apply",
+    "certificate": "cert",
+    "certificates": "cert",
+    "classes": "class",
+    "colleges": "college",
+    "course": "course",
+    "courses": "course",
+    "deadline": "deadline",
+    "deadlines": "deadline",
+    "direction": "direction",
+    "directions": "direction",
+    "dorm": "hostel",
+    "dormitory": "hostel",
+    "dormitories": "hostel",
+    "exam": "exam",
+    "examination": "exam",
+    "examinations": "exam",
+    "exams": "exam",
+    "faculties": "faculty",
+    "fees": "pay",
+    "fee": "pay",
+    "finance": "pay",
+    "finances": "pay",
+    "getting": "obtain",
+    "get": "obtain",
+    "graduated": "graduate",
+    "graduating": "graduate",
+    "hostel": "hostel",
+    "hostels": "hostel",
+    "housing": "hostel",
+    "libraries": "library",
+    "loan": "heslb",
+    "loans": "heslb",
+    "medical": "health",
+    "obtained": "obtain",
+    "obtaining": "obtain",
+    "obtains": "obtain",
+    "paid": "pay",
+    "paying": "pay",
+    "payment": "pay",
+    "payments": "pay",
+    "pays": "pay",
+    "programme": "program",
+    "programmes": "program",
+    "programs": "program",
+    "registered": "register",
+    "registering": "register",
+    "registration": "register",
+    "registers": "register",
+    "result": "result",
+    "results": "result",
+    "room": "hostel",
+    "rooms": "hostel",
+    "school": "college",
+    "schools": "college",
+    "semester": "semester",
+    "semesters": "semester",
+    "transcript": "result",
+    "transcripts": "result",
+}
+
+ALIASES = {
+    "aris": {"academic", "registration", "information", "system", "portal", "student", "sr2"},
+    "cafeteria": {"canteen", "dining", "food", "restaurant", "mess"},
+    "coict": {"ict", "college", "informatics", "information", "communication", "technologies", "technology"},
+    "control": {"bill", "invoice", "number", "payment"},
+    "cos": {"college", "science", "sciences"},
+    "duce": {"dar", "es", "salaam", "university", "college", "education"},
+    "fyp": {"final", "year", "project", "research", "dissertation", "capstone"},
+    "heslb": {"loan", "loans", "bodi", "board", "student", "financing"},
+    "hostel": {"accommodation", "dorm", "dormitory", "housing", "room", "residence"},
+    "ids": {"identity", "id", "card", "cards"},
+    "library": {"book", "books", "reading", "study"},
+    "mabibo": {"hostel", "accommodation", "dorm", "residence"},
+    "nhif": {"health", "insurance", "medical", "card"},
+    "nkrumah": {"hall", "auditorium"},
+    "pt": {"practical", "training", "field", "attachment", "internship", "industrial"},
+    "udsm": {"university", "dar", "salaam", "mwl", "nyerere"},
 }
 
 GREETING_WORDS = {
@@ -136,6 +253,30 @@ class RAGService:
 
         source_path = str(path.resolve())
         original_name = display_name or path.name
+        file_stat = path.stat()
+        file_size = file_stat.st_size
+        file_mtime_ns = file_stat.st_mtime_ns
+        stored = self.collection.get(
+            where={"source_path": source_path},
+            include=["metadatas"],
+        )
+        stored_metadatas = stored.get("metadatas", [])
+
+        if stored_metadatas:
+            metadata = stored_metadatas[0]
+            if (
+                metadata.get("source_size") == file_size
+                and metadata.get("source_mtime_ns") == file_mtime_ns
+            ):
+                return {
+                    "document_id": metadata.get("document_id"),
+                    "filename": metadata.get("filename", original_name),
+                    "source_path": source_path,
+                    "chunks_added": 0,
+                    "chunks_total": len(stored_metadatas),
+                    "skipped": True,
+                }
+
         text = self._extract_text(path)
         chunks = self._chunk_text(text)
 
@@ -151,6 +292,8 @@ class RAGService:
                 "document_id": document_id,
                 "filename": original_name,
                 "source_path": source_path,
+                "source_size": file_size,
+                "source_mtime_ns": file_mtime_ns,
                 "chunk_index": index,
                 "pages": self._chunk_pages(chunk),
                 "section": self._chunk_section(chunk),
@@ -169,6 +312,8 @@ class RAGService:
             "filename": original_name,
             "source_path": source_path,
             "chunks_added": len(chunks),
+            "chunks_total": len(chunks),
+            "skipped": False,
         }
 
     def retrieve(self, query, top_k=6):
@@ -668,7 +813,11 @@ class RAGService:
         for sentence, filename in sentence_entries:
             sentence_words = self._meaningful_words(sentence, stop_words)
             sentence_text = " ".join(re.findall(r"\w+", sentence.lower()))
-            if location_phrase and location_phrase not in sentence_text:
+            if (
+                location_phrase
+                and location_phrase not in sentence_text
+                and not self._terms_match_words(location_terms, sentence_words)
+            ):
                 continue
             if location_phrase and len(sentence) > 450:
                 continue
@@ -677,7 +826,7 @@ class RAGService:
                     sentence,
                     stop_words - {"center", "centre", "office", "place"},
                 )
-                if not location_terms.issubset(sentence_location_words):
+                if not self._terms_match_words(location_terms, sentence_location_words):
                     continue
             matched_words = query_words & sentence_words
             score = self._match_score(query_words, matched_words)
@@ -893,51 +1042,45 @@ class RAGService:
         return words
 
     def _normalize_word(self, word):
-        if word in {"registration", "registering", "registered", "registers"}:
-            return "register"
-        if word in {"courses", "course"}:
-            return "course"
-        if word in {"examination", "examinations", "exams"}:
-            return "exam"
-        if word in {"fees", "fee", "payment", "payments", "paying", "paid", "pays"}:
-            return "pay"
-        if word in {"hostel", "hostels", "accommodation", "housing", "room", "rooms"}:
-            return "hostel"
-        if word in {"loans", "loan", "heslb"}:
-            return "heslb"
-        if word in {"medical", "hospital", "health"}:
-            return "health"
-        if word in {"results", "result"}:
-            return "result"
-        if word in {"obtaining", "obtained", "obtains", "get", "getting"}:
-            return "obtain"
-        if word in {"directions", "direction"}:
-            return "direction"
-        if word in {"libraries"}:
-            return "library"
-        return word
+        return NORMALIZED_WORDS.get(word, word)
 
     def _alias_matches(self, query_words, document_words):
-        aliases = {
-            "coict": {"ict", "information", "communication", "technologies", "technology"},
-            "aris": {"academic", "registration", "system", "portal"},
-            "mabibo": {"hostel"},
-        }
-
         matched_words = set()
         for query_word in query_words:
-            query_aliases = aliases.get(query_word, set())
+            query_aliases = self._expanded_aliases(query_word)
             if query_aliases & document_words:
                 matched_words.add(query_word)
                 continue
 
             for document_word in document_words:
-                document_aliases = aliases.get(document_word, set())
-                if query_word in document_aliases:
+                document_aliases = self._expanded_aliases(document_word)
+                if query_word in document_aliases or self._expanded_aliases(query_word) & document_aliases:
                     matched_words.add(query_word)
                     break
 
         return matched_words
+
+    def _expanded_aliases(self, word):
+        aliases = set()
+        for alias in ALIASES.get(word, set()):
+            aliases.add(self._normalize_word(alias))
+        for key, values in ALIASES.items():
+            normalized_values = {self._normalize_word(value) for value in values}
+            if word in normalized_values:
+                aliases.add(key)
+                aliases |= normalized_values
+        return aliases
+
+    def _terms_match_words(self, terms, words):
+        if not terms:
+            return True
+        for term in terms:
+            if term in words:
+                continue
+            if self._expanded_aliases(term) & words:
+                continue
+            return False
+        return True
 
     def _match_score(self, query_words, matched_words):
         if not matched_words:
@@ -951,18 +1094,24 @@ class RAGService:
 
     def _location_query_terms(self, query, stop_words):
         query_words = set(re.findall(r"\w+", query.lower()))
-        if not ({"where", "location"} & query_words):
+        if not (LOCATION_QUERY_WORDS & query_words):
             return set()
+        location_stop_words = stop_words | LOCATION_QUERY_WORDS | {"obtain"}
         return self._meaningful_words(
             query,
-            stop_words - {"center", "centre", "office", "place"},
+            location_stop_words - {"center", "centre", "office", "place"},
         )
 
     def _location_query_phrase(self, query, stop_words):
         query_words = set(re.findall(r"\w+", query.lower()))
-        if not ({"where", "location"} & query_words):
+        if not (LOCATION_QUERY_WORDS & query_words):
             return ""
-        location_stop_words = stop_words - {"center", "centre", "office", "place"}
+        location_stop_words = (stop_words | LOCATION_QUERY_WORDS | {"obtain"}) - {
+            "center",
+            "centre",
+            "office",
+            "place",
+        }
         ordered_terms = []
         for word in re.findall(r"\w+", query.lower()):
             if word in location_stop_words or len(word) <= 2:
@@ -1040,12 +1189,63 @@ class RAGService:
     def _extract_text(self, path):
         suffix = path.suffix.lower()
         if suffix in {".txt", ".md", ".csv"}:
+            if suffix == ".csv":
+                return self._extract_csv_text(path)
             return path.read_text(encoding="utf-8", errors="ignore")
         if suffix == ".pdf":
             return self._extract_pdf_text(path)
         if suffix == ".docx":
             return self._extract_docx_text(path)
         raise ValueError("Unsupported file type. Upload a .txt, .md, .csv, .pdf, or .docx file.")
+
+    def _extract_csv_text(self, path):
+        with path.open("r", encoding="utf-8-sig", errors="ignore", newline="") as file:
+            sample = file.read(4096)
+            file.seek(0)
+            try:
+                dialect = csv.Sniffer().sniff(sample)
+            except csv.Error:
+                dialect = csv.excel
+
+            reader = csv.DictReader(file, dialect=dialect)
+            if not reader.fieldnames:
+                file.seek(0)
+                rows = csv.reader(file, dialect=dialect)
+                return "\n".join(
+                    ". ".join(cell.strip() for cell in row if cell.strip())
+                    for row in rows
+                    if any(cell.strip() for cell in row)
+                )
+
+            lines = []
+            for row in reader:
+                values = {
+                    (key or "").strip().lower(): (value or "").strip()
+                    for key, value in row.items()
+                    if (value or "").strip()
+                }
+                if not values:
+                    continue
+
+                name = (
+                    values.get("name")
+                    or values.get("building")
+                    or values.get("place")
+                    or values.get("location")
+                    or values.get("facility")
+                    or values.get("office")
+                )
+                details = [
+                    f"{key.replace('_', ' ').title()}: {value}"
+                    for key, value in values.items()
+                    if value != name
+                ]
+                if name:
+                    lines.append(f"Campus map location: {name}. {'. '.join(details)}.")
+                else:
+                    lines.append(". ".join(details) + ".")
+
+            return "\n".join(lines)
 
     def _extract_pdf_text(self, path):
         from pypdf import PdfReader

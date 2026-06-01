@@ -88,11 +88,18 @@ def ingest_document_paths(paths, display_name_for_path=None):
             display_name = display_name_for_path(path) if display_name_for_path else None
             result = rag_service.ingest_path(path, display_name=display_name)
             loaded_documents.append(result)
-            logging.info(
-                "Loaded RAG document %s into %s chunks",
-                result["filename"],
-                result["chunks_added"],
-            )
+            if result.get("skipped"):
+                logging.info(
+                    "RAG document %s is already current with %s chunks",
+                    result["filename"],
+                    result["chunks_total"],
+                )
+            else:
+                logging.info(
+                    "Loaded RAG document %s into %s chunks",
+                    result["filename"],
+                    result["chunks_added"],
+                )
         except Exception as e:
             error_message = str(e)
             failed_documents.append({

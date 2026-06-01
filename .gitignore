@@ -8,6 +8,8 @@ chroma_store/
 chroma_cache/
 flask.log
 flask-error.log
+flask.out.log
+flask.err.log
 server.log
 server.out.log
 server.err.log

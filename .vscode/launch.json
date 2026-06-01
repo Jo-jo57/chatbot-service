@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Flask: app.py (.venv311)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}\\app.py",
+      "console": "integratedTerminal",
+      "python": "${workspaceFolder}\\.venv311\\Scripts\\python.exe",
+      "justMyCode": true
+    }
+  ]
+}
