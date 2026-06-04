@@ -345,7 +345,7 @@ class RAGService:
         vector_chunks = [
             {
                 "content": document,
-                "metadata": metadata,
+                "metadata": metadata or {},
                 "distance": distance,
                 "keyword_score": 0,
             }
@@ -1311,6 +1311,7 @@ class RAGService:
                 stored.get("documents", []),
                 stored.get("metadatas", []),
             ):
+                metadata = metadata or {}
                 document_words = self._meaningful_words(document, STOP_WORDS)
                 alias_words = set()
                 for word in document_words:

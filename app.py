@@ -112,7 +112,7 @@ def load_configured_documents():
 
 loaded_documents, failed_documents = load_configured_documents()
 RAG_DISTANCE_THRESHOLD = 2.8
-OLLAMA_TIMEOUT_SECONDS = 7
+OLLAMA_TIMEOUT_SECONDS = 3
 
 
 def get_current_time():
@@ -146,7 +146,14 @@ def chat():
             }), 400
 
         retrieved_chunks = rag_service.retrieve(user_message) if rag_service.count() > 0 else []
-        best_distance = min((chunk["distance"] for chunk in retrieved_chunks), default=None)
+        retrieved_chunks = [
+            {
+                **chunk,
+                "metadata": chunk.get("metadata") or {},
+            }
+            for chunk in retrieved_chunks
+        ]
+        best_distance = min((chunk.get("distance", 999) for chunk in retrieved_chunks), default=None)
 
         if best_distance is not None and best_distance <= RAG_DISTANCE_THRESHOLD:
             rag_result = rag_service.answer_with_timeout(
@@ -171,11 +178,17 @@ def chat():
         })
         
     except Exception as e:
-        logging.error(f"Error processing chat request: {str(e)}")
+        logging.exception("Error processing chat request")
         return jsonify({
-            'error': 'Sorry, I encountered an error. Please try again.',
-            'response': 'I apologize, but I\'m having trouble processing your request right now. Please try rephrasing your question or contact campus support directly.'
-        }), 500
+            'response': generate_fallback_response(),
+            'error': f'Internal chat error: {str(e)}',
+            'timestamp': get_current_time(),
+            'sources': [],
+            'context': {
+                'topic': None,
+                'helpful_links': []
+            }
+        }), 200
 
 @app.route('/documents/status', methods=['GET'])
 def document_status():
