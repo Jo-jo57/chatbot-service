@@ -160,6 +160,9 @@ NORMALIZED_WORDS = {
     "schools": "college",
     "semester": "semester",
     "semesters": "semester",
+    "started": "start",
+    "starting": "start",
+    "stating": "start",
     "transcript": "result",
     "transcripts": "result",
 }
@@ -180,7 +183,14 @@ ALIASES = {
     "nhif": {"health", "insurance", "medical", "card"},
     "nkrumah": {"hall", "auditorium"},
     "pt": {"practical", "training", "field", "attachment", "internship", "industrial"},
+    "ue": {"1st", "2nd", "semester", "exam", "examination", "examinations"},
     "udsm": {"university", "dar", "salaam", "mwl", "nyerere"},
+}
+
+SHORT_QUERY_WORDS = {
+    "id",
+    "pt",
+    "ue",
 }
 
 GREETING_WORDS = {
@@ -350,6 +360,7 @@ class RAGService:
                 "keyword_score": 0,
             }
             for document, metadata, distance in zip(documents, metadatas, distances)
+            if document
         ]
         keyword_chunks = self._keyword_retrieve(query, top_k=top_k * 2)
 
@@ -379,6 +390,27 @@ class RAGService:
             f"Source: {chunk['metadata'].get('filename', 'uploaded document')}\n{chunk['content']}"
             for chunk in retrieved_chunks
         )
+
+        schedule_answer = self._answer_from_schedule_dates(
+            query,
+            self._meaningful_words(query, STOP_WORDS),
+            retrieved_chunks,
+        )
+        if schedule_answer:
+            return {
+                "response": self.format_answer(schedule_answer, query=query),
+                "sources": [
+                    {
+                        "filename": chunk["metadata"].get("filename"),
+                        "chunk_index": chunk["metadata"].get("chunk_index"),
+                        "pages": chunk["metadata"].get("pages"),
+                        "section": chunk["metadata"].get("section"),
+                        "distance": float(chunk["distance"]),
+                    }
+                    for chunk in retrieved_chunks
+                ],
+                "context": context,
+            }
 
         response = self.generate_llm_answer(
             query=query,
@@ -1056,7 +1088,9 @@ class RAGService:
         )
 
     def _answer_from_schedule_dates(self, query, query_words, retrieved_chunks):
-        if not ({"when", "date", "dates", "start", "starts", "begin", "begins", "end", "ends"} & set(re.findall(r"\w+", query.lower()))):
+        raw_query_words = set(re.findall(r"\w+", query.lower()))
+        normalized_raw_query_words = {self._normalize_word(word) for word in raw_query_words}
+        if not ({"when", "date", "dates", "start", "starts", "begin", "begins", "end", "ends"} & normalized_raw_query_words):
             return ""
 
         date_pattern = (
@@ -1073,11 +1107,16 @@ class RAGService:
             "begins",
             "end",
             "ends",
+            "start",
         }
+        expanded_query_words = set(query_words)
+        for word in query_words:
+            expanded_query_words |= self._expanded_aliases(word)
+
         ordered_query_terms = [
             self._normalize_word(word)
             for word in re.findall(r"\w+", query.lower())
-            if self._normalize_word(word) in query_words
+            if self._normalize_word(word) in expanded_query_words
             and self._normalize_word(word) not in schedule_words
         ]
         phrase_pattern = ""
@@ -1086,7 +1125,7 @@ class RAGService:
 
         if phrase_pattern:
             for chunk in retrieved_chunks:
-                normalized_content = " ".join(chunk["content"].split())
+                normalized_content = " ".join((chunk.get("content") or "").split())
                 phrase_match = re.search(phrase_pattern, normalized_content, re.IGNORECASE)
                 if not phrase_match:
                     continue
@@ -1104,18 +1143,21 @@ class RAGService:
                         return f"{event_name} begins on {begins_date}."
                     return f"{event_name} ends on {ends_date}."
 
-        best_match = None
+        event_matches = []
 
         for chunk in retrieved_chunks:
-            chunk_words = self._meaningful_words(chunk["content"], STOP_WORDS)
-            if len(query_words & chunk_words) < min(2, len(query_words)):
+            chunk_content = chunk.get("content") or ""
+            chunk_words = self._meaningful_words(chunk_content, STOP_WORDS)
+            chunk_matches = (query_words & chunk_words) | self._alias_matches(query_words, chunk_words)
+            if len(chunk_matches) < min(2, len(query_words)):
                 continue
 
-            normalized_content = " ".join(chunk["content"].split())
+            normalized_content = " ".join(chunk_content.split())
             for event_match in re.finditer(r"[A-Z][A-Z0-9 '&/().,-]+", normalized_content):
                 event_name = event_match.group(0).strip(" .,-")
                 event_words = self._meaningful_words(event_name, STOP_WORDS)
-                if len(query_words & event_words) < min(2, len(query_words)):
+                event_query_matches = (query_words & event_words) | self._alias_matches(query_words, event_words)
+                if len(event_query_matches) < min(2, len(query_words)):
                     continue
 
                 nearby_text = normalized_content[event_match.end():event_match.end() + 240]
@@ -1124,19 +1166,58 @@ class RAGService:
                 if not begins_match and not ends_match:
                     continue
 
-                score = len(query_words & event_words)
-                if best_match is None or score > best_match[0]:
-                    best_match = (
+                score = len(event_query_matches)
+                filename = chunk["metadata"].get("filename", "").lower()
+                if "almanac" in filename:
+                    score += 5
+                if "exam" in expanded_query_words and "exam" in event_words:
+                    score += 3
+                if "coursework" in event_words:
+                    score -= 3
+                if "release" in event_words or "result" in event_words:
+                    score -= 3
+
+                event_matches.append(
+                    (
                         score,
                         event_name.title(),
                         begins_match.group(1) if begins_match else "",
                         ends_match.group(1) if ends_match else "",
                     )
+                )
 
-        if not best_match:
+        if not event_matches:
             return ""
 
-        _, event_name, begins_date, ends_date = best_match
+        event_matches.sort(key=lambda item: item[0], reverse=True)
+        wants_exams = "ue" in query_words or "exam" in expanded_query_words
+        mentions_semester = bool({"1st", "first", "2nd", "second"} & raw_query_words)
+        if wants_exams and not mentions_semester:
+            selected_events = []
+            seen_names = set()
+            for _, event_name, begins_date, ends_date in event_matches:
+                event_words = self._meaningful_words(event_name, STOP_WORDS)
+                if "exam" not in event_words or "coursework" in event_words:
+                    continue
+                if event_name in seen_names:
+                    continue
+                selected_events.append((event_name, begins_date, ends_date))
+                seen_names.add(event_name)
+                if len(selected_events) == 2:
+                    break
+
+            if len(selected_events) > 1:
+                parts = []
+                for event_name, begins_date, ends_date in selected_events:
+                    if begins_date and ends_date:
+                        parts.append(f"{event_name} begins on {begins_date} and ends on {ends_date}.")
+                    elif begins_date:
+                        parts.append(f"{event_name} begins on {begins_date}.")
+                    elif ends_date:
+                        parts.append(f"{event_name} ends on {ends_date}.")
+                return " ".join(parts)
+
+        _, event_name, begins_date, ends_date = event_matches[0]
         if begins_date and ends_date:
             return f"{event_name} begins on {begins_date} and ends on {ends_date}."
         if begins_date:
@@ -1161,7 +1242,9 @@ class RAGService:
             if normalized_word in GREETING_WORDS:
                 words.add(normalized_word)
                 continue
-            if word in stop_words or len(word) <= 2:
+            if word in stop_words:
+                continue
+            if len(word) <= 2 and normalized_word not in SHORT_QUERY_WORDS:
                 continue
             words.add(normalized_word)
         return words
