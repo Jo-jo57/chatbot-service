@@ -126,6 +126,7 @@ NORMALIZED_WORDS = {
     "fee": "pay",
     "finance": "pay",
     "finances": "pay",
+    "first": "1st",
     "getting": "obtain",
     "get": "obtain",
     "graduated": "graduate",
@@ -137,6 +138,8 @@ NORMALIZED_WORDS = {
     "loan": "heslb",
     "loans": "heslb",
     "medical": "health",
+    "meeting": "meeting",
+    "meetings": "meeting",
     "obtained": "obtain",
     "obtaining": "obtain",
     "obtains": "obtain",
@@ -156,6 +159,7 @@ NORMALIZED_WORDS = {
     "results": "result",
     "room": "hostel",
     "rooms": "hostel",
+    "second": "2nd",
     "school": "college",
     "schools": "college",
     "semester": "semester",
@@ -595,7 +599,12 @@ class RAGService:
             )
 
     def format_answer(self, answer, query=""):
-        cleaned_answer = self._clean_answer_text(self._remove_thinking_text(answer))
+        raw_answer = self._remove_thinking_text(answer)
+        almanac_answer = self._format_almanac_event_answer(raw_answer)
+        if almanac_answer:
+            return almanac_answer
+
+        cleaned_answer = self._clean_answer_text(raw_answer)
         if cleaned_answer in {
             INSUFFICIENT_INFORMATION_RESPONSE,
             "I could not find matching information in the uploaded document.",
@@ -614,6 +623,37 @@ class RAGService:
             return qa_answer
 
         return cleaned_answer
+
+    def _format_almanac_event_answer(self, answer):
+        if not str(answer or "").startswith("ALMANAC_EVENTS\n"):
+            return ""
+
+        lines = [
+            line.strip()
+            for line in str(answer).splitlines()[1:]
+            if line.strip() and "|" in line
+        ]
+        if not lines:
+            return ""
+
+        points = []
+        for line in lines:
+            event_name, date_value = line.split("|", 1)
+            event_name = self._clean_answer_text(event_name).rstrip(".:")
+            event_name = re.sub(
+                r"\b(susc|spsc|srkec|mchas)\b",
+                lambda match: match.group(1).upper(),
+                event_name,
+                flags=re.IGNORECASE,
+            )
+            date_value = self._clean_answer_text(date_value).rstrip(".")
+            if event_name and date_value:
+                points.append(f"{len(points) + 1}. {event_name}: {date_value}.")
+
+        if not points:
+            return ""
+
+        return "The almanac lists these matching events:\n\n" + "\n\n".join(points)
 
     def _remove_thinking_text(self, text):
         cleaned = str(text or "")
@@ -888,7 +928,7 @@ class RAGService:
 
     def _format_event_name(self, event_name):
         words = []
-        acronyms = {"fyp", "pt", "udsm", "coict", "aris", "nhif"}
+        acronyms = {"fyp", "pt", "udsm", "coict", "aris", "nhif", "susc", "spsc", "srkec", "mchas"}
         ordinals = {"1st", "2nd", "3rd", "4th"}
         for word in event_name.split():
             lower_word = word.lower()
@@ -950,6 +990,10 @@ class RAGService:
         schedule_answer = self._answer_from_schedule_dates(query, query_words, retrieved_chunks)
         if schedule_answer:
             return schedule_answer
+
+        almanac_event_answer = self._answer_from_almanac_events(query, query_words, retrieved_chunks)
+        if almanac_event_answer:
+            return almanac_event_answer
 
         qa_answer = self._answer_from_qa_pairs(query, query_words, retrieved_chunks, stop_words)
         if qa_answer:
@@ -1016,6 +1060,79 @@ class RAGService:
             return INSUFFICIENT_INFORMATION_RESPONSE
 
         return " ".join(selected)
+
+    def _answer_from_almanac_events(self, query, query_words, retrieved_chunks):
+        if not query_words:
+            return ""
+
+        event_query_words = query_words - {
+            "date",
+            "dates",
+            "schedule",
+            "time",
+        }
+        if not event_query_words:
+            return ""
+
+        combined_text = " ".join(
+            " ".join((chunk.get("content") or "").split())
+            for chunk in retrieved_chunks
+            if "almanac" in chunk["metadata"].get("filename", "").lower()
+        )
+        if not combined_text:
+            return ""
+
+        date_pattern = (
+            r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+"
+            r"\d{1,2}\s+[A-Za-z]+\s+\d{4}"
+        )
+        matches = []
+        seen = set()
+        normalized_text = re.sub(r"\[PAGE \d+\]", " ", combined_text)
+
+        for date_match in re.finditer(date_pattern, normalized_text, re.IGNORECASE):
+            date_value = date_match.group(0)
+            before_date = normalized_text[max(0, date_match.start() - 260):date_match.start()]
+            previous_dates = list(re.finditer(date_pattern, before_date, re.IGNORECASE))
+            if previous_dates:
+                before_date = before_date[previous_dates[-1].end():]
+            event_text = re.split(
+                r"(?:\b[ivxlcdm]+\.\s+|\b[a-z]\)\s+|\b\d+\.\s+|Begins?:|Ends?:|Start Working:|Complete Working:)",
+                before_date,
+                flags=re.IGNORECASE,
+            )[-1]
+            event_text = self._clean_answer_text(event_text).strip(" -–:;,.")
+            event_text = re.sub(r"^\d+\s+", "", event_text).strip(" -–:;,.")
+            if not event_text or len(event_text) < 5 or len(event_text) > 180:
+                continue
+
+            event_words = self._meaningful_words(event_text, STOP_WORDS)
+            matched_words = (event_query_words & event_words) | self._alias_matches(event_query_words, event_words)
+            required_matches = min(2, len(event_query_words))
+            if len(matched_words) < required_matches:
+                continue
+
+            event_text = self._format_event_name(event_text)
+            key = (event_text.lower(), date_value.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append((event_text, date_value))
+            if len(matches) == 8:
+                break
+
+        if not matches:
+            return ""
+
+        if len(matches) == 1:
+            event_name, date_value = matches[0]
+            return f"{event_name} is on {date_value}."
+
+        events = [
+            f"{event_name}|{date_value}"
+            for event_name, date_value in matches
+        ]
+        return "ALMANAC_EVENTS\n" + "\n".join(events)
 
     def _answer_from_qa_pairs(self, query, query_words, retrieved_chunks, stop_words):
         query_text = " ".join(re.findall(r"\w+", query.lower()))
@@ -1112,16 +1229,66 @@ class RAGService:
         expanded_query_words = set(query_words)
         for word in query_words:
             expanded_query_words |= self._expanded_aliases(word)
+        subject_query_words = expanded_query_words - schedule_words
+
+        if "exam" in subject_query_words:
+            almanac_text = " ".join(
+                " ".join((chunk.get("content") or "").split())
+                for chunk in retrieved_chunks
+                if "almanac" in chunk["metadata"].get("filename", "").lower()
+            )
+            semester_matches = []
+            for semester_label in ("1ST", "2ND"):
+                pattern = (
+                    rf"{semester_label}\s+SEMESTER\s+EXAMINATIONS\s*[–-]\s*"
+                    rf"EXCEPT\s+FOR\s+MCHAS.*?Begins?:\s*[–-]?\s*({date_pattern})"
+                    rf".*?Ends?:\s*[–-]?\s*({date_pattern})"
+                )
+                match = re.search(pattern, almanac_text, re.IGNORECASE)
+                if match:
+                    display_label = "1st" if semester_label == "1ST" else "2nd"
+                    semester_matches.append(
+                        (
+                            display_label,
+                            match.group(1),
+                            match.group(2),
+                        )
+                    )
+
+            if "1st" in subject_query_words:
+                semester_matches = [
+                    item for item in semester_matches if item[0] == "1st"
+                ]
+            elif "2nd" in subject_query_words:
+                semester_matches = [
+                    item for item in semester_matches if item[0] == "2nd"
+                ]
+
+            if semester_matches:
+                return " ".join(
+                    f"{label} semester examinations begin on {begins_date} and end on {ends_date}."
+                    for label, begins_date, ends_date in semester_matches[:2]
+                )
 
         ordered_query_terms = [
             self._normalize_word(word)
             for word in re.findall(r"\w+", query.lower())
-            if self._normalize_word(word) in expanded_query_words
+            if self._normalize_word(word) in subject_query_words
             and self._normalize_word(word) not in schedule_words
         ]
         phrase_pattern = ""
         if len(ordered_query_terms) >= 2:
-            phrase_pattern = r"[-\s]+".join(re.escape(term) for term in ordered_query_terms)
+            flexible_terms = []
+            for term in ordered_query_terms:
+                if term == "exam":
+                    flexible_terms.append(r"(?:exam|exams|examination|examinations)")
+                elif term == "1st":
+                    flexible_terms.append(r"(?:1st|first|i)")
+                elif term == "2nd":
+                    flexible_terms.append(r"(?:2nd|second|ii)")
+                else:
+                    flexible_terms.append(re.escape(term))
+            phrase_pattern = r"[-\s]+".join(flexible_terms)
 
         if phrase_pattern:
             for chunk in retrieved_chunks:
@@ -1148,16 +1315,18 @@ class RAGService:
         for chunk in retrieved_chunks:
             chunk_content = chunk.get("content") or ""
             chunk_words = self._meaningful_words(chunk_content, STOP_WORDS)
-            chunk_matches = (query_words & chunk_words) | self._alias_matches(query_words, chunk_words)
-            if len(chunk_matches) < min(2, len(query_words)):
+            chunk_matches = (subject_query_words & chunk_words) | self._alias_matches(subject_query_words, chunk_words)
+            required_chunk_matches = min(2, len(subject_query_words))
+            if len(chunk_matches) < required_chunk_matches:
                 continue
 
             normalized_content = " ".join(chunk_content.split())
             for event_match in re.finditer(r"[A-Z][A-Z0-9 '&/().,-]+", normalized_content):
                 event_name = event_match.group(0).strip(" .,-")
                 event_words = self._meaningful_words(event_name, STOP_WORDS)
-                event_query_matches = (query_words & event_words) | self._alias_matches(query_words, event_words)
-                if len(event_query_matches) < min(2, len(query_words)):
+                event_query_matches = (subject_query_words & event_words) | self._alias_matches(subject_query_words, event_words)
+                required_event_matches = min(2, len(subject_query_words))
+                if len(event_query_matches) < required_event_matches:
                     continue
 
                 nearby_text = normalized_content[event_match.end():event_match.end() + 240]
@@ -1351,6 +1520,19 @@ class RAGService:
                 score += 8
             if "coict" in query_words and "coict" in document_text:
                 score += 3
+            if {"exam", "semester"} & query_words:
+                if "almanac" in filename:
+                    score += 8
+                if "exam" in query_words and "examination" in document_text:
+                    score += 3
+                if "1st" in query_words and (
+                    "1st semester" in document_text or "semester i" in document_text
+                ):
+                    score += 5
+                if "2nd" in query_words and (
+                    "2nd semester" in document_text or "semester ii" in document_text
+                ):
+                    score += 5
 
             for phrase in ("statement of results", "admission letter", "control number"):
                 if phrase in query_text and phrase in document_text:
@@ -1420,6 +1602,9 @@ class RAGService:
 
     def count(self):
         return self.collection.count()
+
+    def warm_keyword_index(self):
+        return len(self._get_keyword_index())
 
     def purge_except_source_paths(self, source_paths):
         allowed_paths = {str(Path(source_path).resolve()) for source_path in source_paths}

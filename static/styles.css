@@ -148,6 +148,29 @@ html,body{height:100%;margin:0;background:var(--bg);color:#0f172a}
   font-weight:600;
   white-space:pre-wrap;
 }
+.helpful-links{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-top:12px;
+}
+.helpful-link{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-height:36px;
+  padding:0 12px;
+  border-radius:8px;
+  background:var(--blue);
+  color:#fff;
+  font-size:14px;
+  font-weight:800;
+  text-decoration:none;
+  white-space:normal;
+}
+.helpful-link:hover{
+  background:var(--blue-dark);
+}
 
 /* timestamp styling */
 .timestamp{

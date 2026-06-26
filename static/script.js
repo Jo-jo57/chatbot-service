@@ -27,6 +27,37 @@ function appendUserMessage(text) {
   content.scrollTop = content.scrollHeight;
 }
 
+function renderHelpfulLinks(messageElement, links) {
+  const existingLinks = messageElement.querySelector('.helpful-links');
+  if (existingLinks) existingLinks.remove();
+
+  if (!Array.isArray(links) || links.length === 0) return;
+
+  const list = document.createElement('div');
+  list.className = 'helpful-links';
+
+  links.forEach(link => {
+    if (!link || !link.url) return;
+    const anchor = document.createElement('a');
+    anchor.className = 'helpful-link';
+    anchor.href = link.url;
+    anchor.target = '_blank';
+    anchor.rel = 'noopener noreferrer';
+    anchor.textContent = link.title || 'Open link';
+    list.appendChild(anchor);
+  });
+
+  if (list.children.length > 0) {
+    messageElement.appendChild(list);
+  }
+}
+
+function setAssistantReply(entry, text, links = []) {
+  const messageElement = entry.querySelector('.message');
+  messageElement.textContent = text;
+  renderHelpfulLinks(messageElement, links);
+}
+
 function appendAssistantReply(text) {
   const entry = document.createElement('div');
   entry.className = 'assistant-entry';
@@ -65,13 +96,13 @@ async function sendMessage() {
     const data = await response.json();
 
     if (!response.ok) {
-      thinkingEntry.querySelector('.message').textContent = data.error || 'Something went wrong while processing your message.';
+      setAssistantReply(thinkingEntry, data.error || 'Something went wrong while processing your message.');
       return;
     }
 
-    thinkingEntry.querySelector('.message').textContent = data.response;
+    setAssistantReply(thinkingEntry, data.response, data.context?.helpful_links);
   } catch (error) {
-    thinkingEntry.querySelector('.message').textContent = 'Unable to reach the chatbot service. Please try again.';
+    setAssistantReply(thinkingEntry, 'Unable to reach the chatbot service. Please try again.');
   } finally {
     sendBtn.disabled = false;
     input.focus();
