@@ -18,6 +18,8 @@ INSUFFICIENT_INFORMATION_RESPONSE = (
     "I do not have enough information in the uploaded documents to answer that question."
 )
 
+LOCATION_GUIDE_EXTRACTOR_VERSION = 2
+
 STOP_WORDS = {
     "a",
     "about",
@@ -106,6 +108,10 @@ NORMALIZED_WORDS = {
     "applying": "apply",
     "certificate": "cert",
     "certificates": "cert",
+    "café": "cafe",
+    "cafés": "cafe",
+    "cafes": "cafe",
+    "cafeterias": "cafeteria",
     "classes": "class",
     "colleges": "college",
     "course": "course",
@@ -131,6 +137,7 @@ NORMALIZED_WORDS = {
     "get": "obtain",
     "graduated": "graduate",
     "graduating": "graduate",
+    "halls": "hall",
     "hostel": "hostel",
     "hostels": "hostel",
     "housing": "hostel",
@@ -173,7 +180,8 @@ NORMALIZED_WORDS = {
 
 ALIASES = {
     "aris": {"academic", "registration", "information", "system", "portal", "student", "sr2"},
-    "cafeteria": {"canteen", "dining", "food", "restaurant", "mess"},
+    "cafe": {"cafeteria", "canteen", "dining", "food", "restaurant", "mess"},
+    "cafeteria": {"cafe", "canteen", "dining", "food", "restaurant", "mess"},
     "coict": {"ict", "college", "informatics", "information", "communication", "technologies", "technology"},
     "control": {"bill", "invoice", "number", "payment"},
     "cos": {"college", "science", "sciences"},
@@ -288,8 +296,13 @@ class RAGService:
 
         if stored_metadatas:
             metadata = stored_metadatas[0]
+            needs_location_refresh = (
+                original_name.lower() == "udsm locations.docx"
+                and metadata.get("extractor_version") != LOCATION_GUIDE_EXTRACTOR_VERSION
+            )
             if (
-                metadata.get("source_size") == file_size
+                not needs_location_refresh
+                and metadata.get("source_size") == file_size
                 and metadata.get("source_mtime_ns") == file_mtime_ns
             ):
                 return {
@@ -318,6 +331,11 @@ class RAGService:
                 "source_path": source_path,
                 "source_size": file_size,
                 "source_mtime_ns": file_mtime_ns,
+                "extractor_version": (
+                    LOCATION_GUIDE_EXTRACTOR_VERSION
+                    if original_name.lower() == "udsm locations.docx"
+                    else 1
+                ),
                 "chunk_index": index,
                 "pages": self._chunk_pages(chunk),
                 "section": self._chunk_section(chunk),
@@ -589,14 +607,8 @@ class RAGService:
             if generated_answer:
                 return generated_answer
             return self.extractive_answer(query, retrieved_chunks or [])
-        except Exception as error:
-            fallback = self.extractive_answer(query, retrieved_chunks or [])
-            return (
-                f"{fallback}\n\n"
-                "Note: I found this from the document, but I could not reach the Ollama model. "
-                f"Make sure Ollama is running and `{self.llm_model_name}` is available.\n\n"
-                f"Technical detail: {error}"
-            )
+        except Exception:
+            return self.extractive_answer(query, retrieved_chunks or [])
 
     def format_answer(self, answer, query=""):
         raw_answer = self._remove_thinking_text(answer)
@@ -621,6 +633,10 @@ class RAGService:
         qa_answer = self._format_question_answer_pairs(cleaned_answer)
         if qa_answer:
             return qa_answer
+
+        concise_answer = self._format_concise_answer(cleaned_answer, query=query)
+        if concise_answer:
+            return concise_answer
 
         return cleaned_answer
 
@@ -677,6 +693,8 @@ class RAGService:
         }
         for old, new in replacements.items():
             cleaned = cleaned.replace(old, new)
+        cleaned = cleaned.replace("My Courese&Results", "My Courses & Results")
+        cleaned = cleaned.replace("Courese&Results", "Courses & Results")
 
         cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
         cleaned = re.sub(r"\]+(?=[.!?]?$)", "", cleaned)
@@ -694,6 +712,71 @@ class RAGService:
             cleaned += "."
 
         return cleaned
+
+    def _format_concise_answer(self, answer, query=""):
+        if "\n\n" in str(answer or ""):
+            return answer
+
+        sentences = [
+            self._clean_answer_text(sentence)
+            for sentence in self._split_answer_sentences(answer)
+            if sentence.strip()
+        ]
+        if len(sentences) <= 1:
+            return ""
+
+        query_words = set(re.findall(r"\w+", str(query or "").lower()))
+        use_numbered_points = bool(
+            query_words & {
+                "when",
+                "dates",
+                "date",
+                "deadlines",
+                "deadline",
+                "requirements",
+                "steps",
+                "guidelines",
+                "process",
+            }
+        )
+
+        sentences = sentences[:4]
+        if use_numbered_points:
+            return "\n\n".join(
+                f"{index}. {sentence}"
+                for index, sentence in enumerate(sentences, start=1)
+            )
+        return "\n\n".join(sentences)
+
+    def _split_answer_sentences(self, text):
+        normalized = re.sub(r"\s*\[PAGE \d+\]\s*", " ", str(text or ""))
+        normalized = re.sub(r"\s*\[SECTION\]\s*[^.]+\.?", ". ", normalized)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if not normalized:
+            return []
+        return [
+            sentence.strip(" -")
+            for sentence in re.split(r"(?<=[.!?])\s+", normalized)
+            if sentence.strip(" -")
+        ]
+
+    def _is_noisy_sentence(self, sentence):
+        text = self._clean_answer_text(sentence)
+        if not text:
+            return True
+
+        lower_text = text.lower()
+        if len(text) < 12:
+            return True
+        if len(text) > 650:
+            return True
+        if lower_text.startswith(("source:", "page ", "section ")):
+            return True
+        if re.fullmatch(r"[\W\d_]+", text):
+            return True
+        if len(re.findall(r"[A-Za-z]{3,}", text)) < 2:
+            return True
+        return False
 
     def _should_format_as_points(self, query, answer):
         query_text = " ".join(re.findall(r"\w+", query.lower()))
@@ -999,21 +1082,57 @@ class RAGService:
         if qa_answer:
             return qa_answer
 
+        location_guide_answer = self._answer_from_location_guide(
+            query,
+            query_words,
+            retrieved_chunks,
+        )
+        if location_guide_answer:
+            return location_guide_answer
+
         location_phrase = self._location_query_phrase(query, stop_words)
         location_terms = self._location_query_terms(query, stop_words)
         query_text = " ".join(re.findall(r"\w+", query.lower()))
         sentence_entries = []
         for chunk in retrieved_chunks:
             filename = chunk["metadata"].get("filename", "")
-            for sentence in re.split(r"(?<=[.!?])\s+", chunk["content"]):
+            for sentence in self._split_answer_sentences(chunk["content"]):
                 cleaned_sentence = sentence.strip()
-                if cleaned_sentence:
+                if cleaned_sentence and not self._is_noisy_sentence(cleaned_sentence):
                     sentence_entries.append((cleaned_sentence, filename))
 
         scored_sentences = []
         for sentence, filename in sentence_entries:
             sentence_words = self._meaningful_words(sentence, stop_words)
             sentence_text = " ".join(re.findall(r"\w+", sentence.lower()))
+            if (
+                {"requirement", "requirements"} & query_words
+                and not ({"requirement", "requirements"} & sentence_words)
+            ):
+                continue
+            if "prospectus" in filename.lower():
+                prospectus_specific_terms = query_words - {
+                    "admission",
+                    "admissions",
+                    "entry",
+                    "requirement",
+                    "requirements",
+                    "program",
+                    "programme",
+                    "degree",
+                    "course",
+                    "courses",
+                    "college",
+                    "school",
+                    "faculty",
+                    "udsm",
+                    "university",
+                }
+                if prospectus_specific_terms and not self._terms_match_words(
+                    prospectus_specific_terms,
+                    sentence_words,
+                ):
+                    continue
             if (
                 location_phrase
                 and location_phrase not in sentence_text
@@ -1030,6 +1149,8 @@ class RAGService:
                 if not self._terms_match_words(location_terms, sentence_location_words):
                     continue
             matched_words = query_words & sentence_words
+            alias_matched_words = self._alias_matches(query_words, sentence_words)
+            matched_words |= alias_matched_words
             score = self._match_score(query_words, matched_words)
             for phrase in ("statement of results", "admission letter", "control number"):
                 if phrase in query_text and phrase in sentence_text:
@@ -1044,22 +1165,36 @@ class RAGService:
         if scored_sentences:
             scored_sentences.sort(key=lambda item: item[0], reverse=True)
             best_filename = scored_sentences[0][2].lower()
+            best_score = scored_sentences[0][0]
             max_sentences = 1
-            if "prospectus" in best_filename or "almanac" in best_filename:
-                max_sentences = 3
+            if "almanac" in best_filename:
+                max_sentences = 2
+            elif "prospectus" in best_filename:
+                max_sentences = 2
 
             seen = set()
-            for _, sentence, _ in scored_sentences:
-                if sentence in seen:
+            for score, sentence, filename in scored_sentences:
+                normalized_sentence = self._clean_answer_text(sentence)
+                if normalized_sentence in seen:
                     continue
-                selected.append(sentence)
-                seen.add(sentence)
+                if filename.lower() != best_filename and score < best_score:
+                    continue
+                if max_sentences > 1 and score < max(1, best_score - 1):
+                    continue
+                selected.append(normalized_sentence)
+                seen.add(normalized_sentence)
                 if len(selected) == max_sentences:
                     break
         if not selected:
             return INSUFFICIENT_INFORMATION_RESPONSE
 
-        return " ".join(selected)
+        if len(selected) == 1:
+            return selected[0]
+
+        return "\n\n".join(
+            f"{index}. {sentence}"
+            for index, sentence in enumerate(selected, start=1)
+        )
 
     def _answer_from_almanac_events(self, query, query_words, retrieved_chunks):
         if not query_words:
@@ -1157,8 +1292,45 @@ class RAGService:
                 answer_matches = query_words & answer_words
                 answer_matches |= self._alias_matches(query_words, answer_words)
                 matched_words = question_matches | answer_matches
+                if (
+                    {"requirement", "requirements"} & query_words
+                    and not ({"requirement", "requirements"} & (question_words | answer_words))
+                ):
+                    continue
+                program_terms = query_words - {
+                    "access",
+                    "admission",
+                    "admit",
+                    "entry",
+                    "find",
+                    "get",
+                    "give",
+                    "go",
+                    "how",
+                    "obtain",
+                    "requirement",
+                    "requirements",
+                    "see",
+                    "show",
+                    "tell",
+                    "view",
+                    "program",
+                    "programme",
+                    "degree",
+                }
+                if program_terms and not self._terms_match_words(
+                    program_terms,
+                    question_words | answer_words,
+                ):
+                    continue
                 score = (len(question_matches) * 4) + len(answer_matches)
                 if len(query_words) > 1 and not question_matches:
+                    score = 0
+                if (
+                    len(query_words) >= 3
+                    and len(question_matches) < 2
+                    and not (query_words & {"aris", "fee", "fees", "result", "results"})
+                ):
                     score = 0
 
                 for phrase in topic_phrases:
@@ -1173,6 +1345,150 @@ class RAGService:
         if best_pair:
             return best_pair[1]
         return ""
+
+    def _answer_from_location_guide(self, query, query_words, retrieved_chunks):
+        if not query_words:
+            return ""
+
+        guide_chunks = [
+            chunk
+            for chunk in retrieved_chunks
+            if chunk["metadata"].get("filename", "").lower() == "udsm locations.docx"
+        ]
+        if not guide_chunks:
+            return ""
+
+        location_terms = self._location_query_terms(query, STOP_WORDS)
+        subject_words = (location_terms or query_words) - LOCATION_QUERY_WORDS
+        subject_words = {
+            word
+            for word in subject_words
+            if word not in {"udsm", "university", "campus"}
+        }
+        if not subject_words:
+            return ""
+
+        entries = self._location_guide_entries_from_source(guide_chunks)
+        if not entries:
+            guide_text = " ".join(chunk.get("content") or "" for chunk in guide_chunks)
+            entries = self._location_guide_entries(guide_text)
+        if not entries:
+            return ""
+
+        best_entry = None
+        for name, description in entries:
+            searchable_text = f"{name} {description}"
+            entry_words = self._meaningful_words(
+                searchable_text,
+                STOP_WORDS - {"bank", "hall", "library"},
+            )
+            numeric_subject_words = {
+                word for word in subject_words if word.isdigit()
+            }
+            if numeric_subject_words and not numeric_subject_words <= entry_words:
+                continue
+            matched_words = subject_words & entry_words
+            matched_words |= self._alias_matches(subject_words, entry_words)
+            if not matched_words:
+                continue
+
+            score = len(matched_words) * 3
+            name_words = self._meaningful_words(name, STOP_WORDS)
+            name_matches = (subject_words & name_words) | self._alias_matches(subject_words, name_words)
+            score += len(name_matches) * 5
+            score += len(subject_words & name_words) * 3
+
+            normalized_name = " ".join(re.findall(r"\w+", name.lower()))
+            normalized_query = " ".join(re.findall(r"\w+", query.lower()))
+            if normalized_name and normalized_name in normalized_query:
+                score += 10
+
+            if best_entry is None or score > best_entry[0]:
+                best_entry = (score, name, description)
+
+        if not best_entry:
+            return ""
+
+        _, name, description = best_entry
+        query_text = " ".join(re.findall(r"\w+", query.lower()))
+        if "new library" in query_text and "New Library:" in description:
+            match = re.search(r"New Library:\s*(.*?)(?=\s+Old Library:|\Z)", description)
+            if match:
+                name = "New Library"
+                description = match.group(1)
+        elif "old library" in query_text and "Old Library:" in description:
+            match = re.search(r"Old Library:\s*(.*?)(?=\s+\d+[–-]?\d*\.|\Z)", description)
+            if match:
+                name = "Old Library"
+                description = match.group(1)
+        return f"{name}: {self._clean_answer_text(description)}"
+
+    def _location_guide_entries_from_source(self, guide_chunks):
+        source_path = ""
+        for chunk in guide_chunks:
+            source_path = chunk["metadata"].get("source_path", "")
+            if source_path:
+                break
+        if not source_path:
+            return []
+
+        path = Path(source_path)
+        if not path.exists():
+            return []
+
+        try:
+            text = self._extract_text(path)
+        except Exception:
+            return []
+
+        entries = []
+        current_name = ""
+        current_description = []
+        for raw_line in text.splitlines():
+            line = " ".join(raw_line.split())
+            if not line:
+                continue
+            if self._looks_like_heading(line):
+                if current_name and current_description:
+                    entries.append((current_name, " ".join(current_description)))
+                current_name = re.sub(
+                    r"^\d+(?:[–-]\d+)?(?:\.\d+)*\.?\s+",
+                    "",
+                    line,
+                ).strip()
+                current_description = []
+                continue
+            if current_name:
+                current_description.append(line)
+
+        if current_name and current_description:
+            entries.append((current_name, " ".join(current_description)))
+
+        return [
+            (
+                self._clean_answer_text(name).strip(" ."),
+                self._clean_answer_text(description).strip(" ."),
+            )
+            for name, description in entries
+            if name and description
+        ]
+
+    def _location_guide_entries(self, guide_text):
+        normalized_text = re.sub(r"\[PAGE \d+\]", " ", guide_text)
+        pattern = re.compile(
+            r"\[SECTION\]\s*(?:\d+[–-]?\d*\.?\s*)?([^.\[]+?)\.\s*(.*?)(?=\s+\[SECTION\]|\Z)",
+            re.DOTALL,
+        )
+        entries = []
+        for name, description in pattern.findall(normalized_text):
+            name = self._clean_answer_text(name).strip(" .")
+            description = self._clean_answer_text(description).strip(" .")
+            if not name or not description:
+                continue
+            if name.lower().startswith("university of dar es salaam"):
+                continue
+            entries.append((name, description))
+        return entries
 
     def _answer_registration_process(self, query, retrieved_chunks):
         query_text = " ".join(re.findall(r"\w+", query.lower()))
@@ -1413,7 +1729,11 @@ class RAGService:
                 continue
             if word in stop_words:
                 continue
-            if len(word) <= 2 and normalized_word not in SHORT_QUERY_WORDS:
+            if (
+                len(word) <= 2
+                and not word.isdigit()
+                and normalized_word not in SHORT_QUERY_WORDS
+            ):
                 continue
             words.add(normalized_word)
         return words
@@ -1540,6 +1860,30 @@ class RAGService:
 
             if score <= 0:
                 continue
+            if filename == "undergraduate_prospectus_2025-2026.pdf":
+                strong_terms = {
+                    "admission",
+                    "admissions",
+                    "requirement",
+                    "requirements",
+                    "entry",
+                    "programme",
+                    "program",
+                    "degree",
+                    "course",
+                    "courses",
+                    "college",
+                    "school",
+                    "faculty",
+                    "fee",
+                    "fees",
+                    "tuition",
+                    "prospectus",
+                }
+                if not (query_words & strong_terms) and score < 3:
+                    continue
+                if score < 2:
+                    continue
             scored_chunks.append(
                 {
                     "content": document,
@@ -1718,7 +2062,17 @@ class RAGService:
                 "using it, make sure OneDrive has downloaded it locally, then "
                 "restart the Flask server."
             ) from error
-        return "\n".join(paragraph.text for paragraph in document.paragraphs)
+        lines = [paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()]
+        for table in document.tables:
+            for row in table.rows:
+                cells = [
+                    " ".join(cell.text.split())
+                    for cell in row.cells
+                    if cell.text.strip()
+                ]
+                if cells:
+                    lines.append(". ".join(cells))
+        return "\n".join(lines)
 
     def _chunk_text(self, text):
         prepared = self._prepare_text_for_chunking(text)
@@ -1811,7 +2165,7 @@ class RAGService:
     def _looks_like_heading(self, line):
         if len(line) > 90:
             return False
-        if re.fullmatch(r"\d+(\.\d+)*\.?\s+[A-Z][A-Za-z0-9,()&/ -]+", line):
+        if re.fullmatch(r"\d+(?:[–-]\d+)?(?:\.\d+)*\.?\s+[A-Z].+", line):
             return True
         words = re.findall(r"[A-Za-z]+", line)
         if 2 <= len(words) <= 10 and line.upper() == line and any(len(word) > 3 for word in words):

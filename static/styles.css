@@ -153,6 +153,7 @@ html,body{height:100%;margin:0;background:var(--bg);color:#0f172a}
   flex-wrap:wrap;
   gap:8px;
   margin-top:12px;
+  width:100%;
 }
 .helpful-link{
   display:inline-flex;
@@ -170,6 +171,16 @@ html,body{height:100%;margin:0;background:var(--bg);color:#0f172a}
 }
 .helpful-link:hover{
   background:var(--blue-dark);
+}
+.map-link{
+  width:100%;
+  min-height:44px;
+  border-radius:10px;
+  background:#0f766e;
+  box-shadow:0 8px 20px rgba(15,118,110,0.18);
+}
+.map-link:hover{
+  background:#115e59;
 }
 
 /* timestamp styling */

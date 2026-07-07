@@ -27,6 +27,38 @@ function appendUserMessage(text) {
   content.scrollTop = content.scrollHeight;
 }
 
+function collectResponseLinks(data) {
+  const links = [];
+  const seenUrls = new Set();
+
+  function addLink(title, url, type = '') {
+    if (!url || seenUrls.has(url)) return;
+    seenUrls.add(url);
+    links.push({ title: title || 'Open link', url, type });
+  }
+
+  const mapAction = data?.action || data?.context?.map_action;
+  if (mapAction?.url) {
+    addLink(mapAction.label || 'Open UDSM campus map', mapAction.url, 'map');
+  }
+
+  const campusMapUrl = data?.context?.campus_map_url;
+  if (campusMapUrl) {
+    addLink('Open UDSM campus map', campusMapUrl, 'map');
+  }
+
+  const helpfulLinks = [
+    ...(Array.isArray(data?.context?.helpful_links) ? data.context.helpful_links : []),
+    ...(Array.isArray(data?.helpful_links) ? data.helpful_links : [])
+  ];
+
+  helpfulLinks.forEach(link => {
+    addLink(link.title || link.label || 'Open link', link.url, link.type || '');
+  });
+
+  return links;
+}
+
 function renderHelpfulLinks(messageElement, links) {
   const existingLinks = messageElement.querySelector('.helpful-links');
   if (existingLinks) existingLinks.remove();
@@ -39,7 +71,7 @@ function renderHelpfulLinks(messageElement, links) {
   links.forEach(link => {
     if (!link || !link.url) return;
     const anchor = document.createElement('a');
-    anchor.className = 'helpful-link';
+    anchor.className = link.type === 'map' ? 'helpful-link map-link' : 'helpful-link';
     anchor.href = link.url;
     anchor.target = '_blank';
     anchor.rel = 'noopener noreferrer';
@@ -100,7 +132,7 @@ async function sendMessage() {
       return;
     }
 
-    setAssistantReply(thinkingEntry, data.response, data.context?.helpful_links);
+    setAssistantReply(thinkingEntry, data.response, collectResponseLinks(data));
   } catch (error) {
     setAssistantReply(thinkingEntry, 'Unable to reach the chatbot service. Please try again.');
   } finally {

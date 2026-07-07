@@ -3,7 +3,7 @@ from flask_cors import CORS
 from rag_service import INSUFFICIENT_INFORMATION_RESPONSE, RAGService
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote_plus
 
@@ -25,6 +25,7 @@ DOCUMENT_PATHS = [
     "documents/training guide.docx",
     "documents/fyp and pt.docx",
     "documents/FREQUENTLY ASKED QUESTIONS DURING ADMISSION (1).docx",
+    "documents/UDSM Locations.docx",
     "documents/ALMANAC_2025-2026.pdf",
     "documents/UNDERGRADUATE_PROSPECTUS_2025-2026.pdf",
 ]
@@ -120,6 +121,7 @@ if rag_service.count() > 0:
 RAG_DISTANCE_THRESHOLD = 2.8
 OLLAMA_TIMEOUT_SECONDS = 3
 RAG_RETRIEVAL_TOP_K = 12
+UDSM_LOCATIONS_DOCUMENT = "documents/UDSM Locations.docx"
 CAMPUS_MAP_LABEL = "Open UDSM campus map"
 CAMPUS_MAP_URL = "https://www.google.com/maps/search/?api=1&query=University+of+Dar+es+Salaam+campus+map"
 CAMPUS_MAP_ACTION_TYPE = "open_campus_map"
@@ -132,6 +134,21 @@ KNOWN_CAMPUS_LOCATIONS = [
             "CoICT is the College of Information and Communication Technologies "
             "at the University of Dar es Salaam. It is at UDSM's Kijitonyama "
             "Campus in Kijitonyama, Dar es Salaam, near the Sayansi/Mwenge area."
+        ),
+    },
+    {
+        "aliases": {
+            "sjmc",
+            "sjmc building",
+            "school of journalism and mass communication",
+            "journalism and mass communication",
+        },
+        "name": "SJMC",
+        "map_query": "UDSM School of Journalism and Mass Communication SJMC Dar es Salaam",
+        "description": (
+            "SJMC is the School of Journalism and Mass Communication at the "
+            "University of Dar es Salaam. It is a UDSM campus location in "
+            "Dar es Salaam."
         ),
     },
 ]
@@ -161,7 +178,7 @@ KNOWN_MEETING_SCHEDULES = [
 LOCATION_TERMS = {
     "auditorium",
     "cafeteria",
-    "canteen",
+    "cafe",
     "classroom",
     "coet",
     "cohu",
@@ -174,13 +191,15 @@ LOCATION_TERMS = {
     "hospital",
     "clinic",
     "coict",
+    "sjmc",
+    "journalism",
     "building",
     "campus",
     "hostel",
     "office",
     "school",
     "lecture",
-    "hall",
+    "hall of residence",
     "lab",
     "laboratory",
     "bank",
@@ -197,6 +216,9 @@ LOCATION_PHRASES = {
     "coet building",
     "cohu building",
     "coss building",
+    "sjmc building",
+    "school of journalism and mass communication",
+    "journalism and mass communication",
     "lecture hall",
 }
 
@@ -245,6 +267,47 @@ NON_LOCATION_TERMS = {
     "statement",
 }
 
+SUPPORTED_CAMPUS_TERMS = LOCATION_TERMS | {
+    "academic",
+    "admission",
+    "admissions",
+    "almanac",
+    "aris",
+    "certificate",
+    "college",
+    "course",
+    "courses",
+    "deadline",
+    "degree",
+    "exam",
+    "examination",
+    "fee",
+    "fees",
+    "fyp",
+    "gpa",
+    "graduation",
+    "hostel",
+    "id",
+    "letter",
+    "loan",
+    "nhif",
+    "payment",
+    "practical",
+    "program",
+    "programme",
+    "registration",
+    "requirement",
+    "requirements",
+    "result",
+    "results",
+    "semester",
+    "student",
+    "transcript",
+    "training",
+    "tuition",
+    "udsm",
+}
+
 
 def get_current_time():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -252,6 +315,145 @@ def get_current_time():
 
 def generate_fallback_response():
     return "I do not have enough information in the configured documents to answer that question."
+
+
+def current_local_date():
+    return datetime.now().date()
+
+
+def date_window_for_query(user_message, today=None):
+    query = " ".join(re.findall(r"[a-z0-9]+", str(user_message or "").lower()))
+    today = today or current_local_date()
+
+    if "today" in query:
+        return today, today, "today"
+    if "tomorrow" in query:
+        tomorrow = today + timedelta(days=1)
+        return tomorrow, tomorrow, "tomorrow"
+    if "next week" in query:
+        start = today + timedelta(days=7 - today.weekday())
+        return start, start + timedelta(days=6), "next week"
+    if "this week" in query or "current week" in query:
+        start = today - timedelta(days=today.weekday())
+        return start, start + timedelta(days=6), "this week"
+
+    return None
+
+
+def display_date(date_value):
+    return date_value.strftime("%A %d %B %Y")
+
+
+def parse_meeting_date(date_text):
+    cleaned = re.sub(r"\s+", " ", str(date_text or "")).strip().rstrip(".")
+    formats = (
+        "%A %d %B %Y",
+        "%d %B %Y",
+        "%B %d %Y",
+        "%B %d, %Y",
+    )
+    for date_format in formats:
+        try:
+            return datetime.strptime(cleaned, date_format).date()
+        except ValueError:
+            continue
+    return None
+
+
+def dated_response_items(response):
+    text = keep_date_year_together(str(response or ""))
+    date_pattern = (
+        r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+"
+        r"\d{1,2}\s+"
+        r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+"
+        r"\d{4}"
+    )
+    items = []
+
+    for line in text.splitlines():
+        cleaned_line = line.strip()
+        if not cleaned_line:
+            continue
+        match = re.search(date_pattern, cleaned_line, re.IGNORECASE)
+        if not match:
+            continue
+        meeting_date = parse_meeting_date(match.group(0))
+        if not meeting_date:
+            continue
+        description = re.sub(r"^\d+\.\s*", "", cleaned_line).strip()
+        items.append((meeting_date, description))
+
+    return items
+
+
+def filter_dated_response_by_query(user_message, response):
+    date_window = date_window_for_query(user_message)
+    if not date_window:
+        return response
+
+    start_date, end_date, label = date_window
+    items = dated_response_items(response)
+    if not items:
+        return response
+
+    matching_items = [
+        description
+        for meeting_date, description in items
+        if start_date <= meeting_date <= end_date
+    ]
+    date_range = (
+        display_date(start_date)
+        if start_date == end_date
+        else f"{display_date(start_date)} to {display_date(end_date)}"
+    )
+
+    if not matching_items:
+        return f"No matching meetings are listed for {label} ({date_range})."
+
+    return (
+        f"Matching meetings listed for {label} ({date_range}):\n\n"
+        + "\n\n".join(
+            f"{index}. {description}"
+            for index, description in enumerate(matching_items, start=1)
+        )
+    )
+
+
+def keep_date_year_together(text):
+    weekday = r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
+    month = r"(?:January|February|March|April|May|June|July|August|September|October|November|December)"
+    date_prefixes = [
+        rf"\b{weekday}\s+\d{{1,2}}\s+{month}",
+        rf"\b\d{{1,2}}\s+{month}",
+        rf"\b{month}\s+\d{{1,2}},?",
+    ]
+    for date_prefix in date_prefixes:
+        text = re.sub(
+            rf"({date_prefix})\s*\n+\s*(\d{{4}}\b)",
+            r"\1 \2",
+            text,
+            flags=re.IGNORECASE,
+        )
+    return text
+
+
+def format_chat_response(response):
+    text = str(response or "").strip()
+    if not text:
+        return text
+
+    lines = [
+        re.sub(r"[ \t]+", " ", line).strip()
+        for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    ]
+    text = "\n".join(lines)
+    text = keep_date_year_together(text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"(?<!^)(?<!\n\n)(\n?)((?<!\d)\d{1,2}\.\s+)", r"\n\n\2", text)
+    text = re.sub(r"(?<!^)(?<!\n\n)(\n?)([-*]\s+)", r"\n\n\2", text)
+    text = keep_date_year_together(text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def build_campus_map_url(user_message):
@@ -262,6 +464,59 @@ def build_campus_map_url(user_message):
         "https://www.google.com/maps/search/?api=1&query="
         + quote_plus(f"University of Dar es Salaam {query}")
     )
+
+
+def clean_location_destination(text):
+    destination = text.strip()
+    destination = re.sub(r"[?.!]+$", "", destination)
+    destination = re.sub(
+        r"^(?:please\s+)?(?:where\s+(?:is|are)|directions?\s+to|"
+        r"how\s+do\s+i\s+get\s+to|how\s+can\s+i\s+get\s+to|"
+        r"take\s+me\s+to|show\s+me|find|locate|map\s+of|location\s+of)\s+",
+        "",
+        destination,
+        flags=re.IGNORECASE,
+    )
+    destination = re.sub(
+        r"\b(?:located|location|directions?|navigate|navigation|map)\b",
+        "",
+        destination,
+        flags=re.IGNORECASE,
+    )
+    destination = " ".join(destination.split())
+    destination = re.sub(r"^(?:the|a|an)\s+", "", destination, flags=re.IGNORECASE)
+    return destination or text.strip()
+
+
+def schedule_query_for_retrieval(user_message):
+    query = str(user_message or "")
+    words = set(re.findall(r"[a-z0-9]+", query.lower()))
+    if "ue" not in words:
+        return query
+
+    expanded_query = re.sub(
+        r"\bue\b",
+        "2nd semester examinations",
+        query,
+        flags=re.IGNORECASE,
+    )
+    schedule_terms = {
+        "when",
+        "date",
+        "dates",
+        "start",
+        "starts",
+        "begin",
+        "begins",
+        "end",
+        "ends",
+        "schedule",
+        "timetable",
+    }
+    if words & schedule_terms:
+        return expanded_query
+
+    return f"when are {expanded_query}"
 
 
 def find_known_meeting_schedule(user_message):
@@ -324,7 +579,7 @@ def build_campus_map_action(user_message, known_location=None):
     destination = (
         known_location["name"]
         if known_location
-        else user_message.strip()
+        else clean_location_destination(user_message)
     )
     search_query = "University of Dar es Salaam"
     if known_location:
@@ -343,6 +598,46 @@ def build_campus_map_action(user_message, known_location=None):
         ),
         "app_route": "campus_map",
     }
+
+
+def udsm_locations_document_path():
+    return Path(__file__).resolve().parent / UDSM_LOCATIONS_DOCUMENT
+
+
+def location_document_chunks():
+    path = udsm_locations_document_path()
+    if not path.exists():
+        return []
+    return rag_service.chunks_for_source_path(path, limit=80)
+
+
+def dedupe_chunks(chunks):
+    unique_chunks = []
+    seen = set()
+    for chunk in chunks:
+        metadata = chunk.get("metadata") or {}
+        key = (
+            metadata.get("source_path"),
+            metadata.get("chunk_index"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_chunks.append({
+            **chunk,
+            "metadata": metadata,
+        })
+    return unique_chunks
+
+
+def location_retrieval_chunks(user_message):
+    location_guide_chunks = location_document_chunks()
+    corpus_chunks = (
+        rag_service.retrieve(user_message, top_k=RAG_RETRIEVAL_TOP_K + 10)
+        if rag_service.count() > 0
+        else []
+    )
+    return dedupe_chunks(location_guide_chunks + corpus_chunks)
 
 
 def is_location_question(user_message):
@@ -401,12 +696,75 @@ def campus_map_response(user_message):
     }
 
 
+def location_rag_response(user_message):
+    known_location = find_known_campus_location(user_message)
+    if known_location:
+        return campus_map_response(user_message)
+
+    chunks = location_retrieval_chunks(user_message)
+    if chunks:
+        rag_result = rag_service.answer_from_document(
+            user_message,
+            retrieved_chunks=chunks,
+        )
+        if not is_insufficient_answer(rag_result["response"]):
+            place_name = user_message
+            if ":" in rag_result["response"]:
+                place_name = rag_result["response"].split(":", 1)[0].strip()
+            map_action = build_campus_map_action(place_name or user_message, known_location)
+            return {
+                "intent": "campus_location",
+                "response": (
+                    f"{rag_result['response']}\n\n"
+                    "Use the campus map link to open the location and navigate more easily."
+                ),
+                "sources": rag_result["sources"],
+                "action": map_action,
+                "helpful_links": [
+                    {
+                        "title": CAMPUS_MAP_LABEL,
+                        "url": map_action["url"],
+                    }
+                ],
+            }
+
+    map_result = campus_map_response(user_message)
+    map_result["response"] = (
+        "I could not find that exact place in the configured UDSM location documents. "
+        f"{map_result['response']}"
+    )
+    return map_result
+
+
 def is_insufficient_answer(response):
     return response in {
         INSUFFICIENT_INFORMATION_RESPONSE,
         "I could not find matching information in the uploaded document.",
         generate_fallback_response(),
     }
+
+
+def has_reliable_retrieval(user_message, retrieved_chunks):
+    if not retrieved_chunks:
+        return False
+
+    message_terms = set(re.findall(r"[a-z0-9]+", user_message.lower()))
+    best_keyword_score = max(
+        (chunk.get("keyword_score", 0) for chunk in retrieved_chunks),
+        default=0,
+    )
+    best_distance = min(
+        (chunk.get("distance", 999) for chunk in retrieved_chunks),
+        default=999,
+    )
+    is_supported_topic = bool(message_terms & SUPPORTED_CAMPUS_TERMS)
+    mentions_udsm = bool({"udsm", "university", "campus"} & message_terms)
+
+    if best_keyword_score >= 2:
+        return True
+    if best_keyword_score >= 1 and (is_supported_topic or mentions_udsm):
+        return True
+    return best_distance <= 1.4 and (is_supported_topic or mentions_udsm)
 
 
 @app.route('/')
@@ -434,63 +792,80 @@ def chat():
         helpful_links = []
         action = None
         intent = None
-        meeting_result = meeting_schedule_response(user_message)
-        if meeting_result:
-            intent = meeting_result["intent"]
-            response = meeting_result["response"]
-            sources = meeting_result["sources"]
-            action = meeting_result["action"]
-            helpful_links = meeting_result["helpful_links"]
-        elif is_location_question(user_message):
-            map_result = campus_map_response(user_message)
+        if is_location_question(user_message):
+            map_result = location_rag_response(user_message)
             intent = map_result["intent"]
             response = map_result["response"]
             sources = map_result["sources"]
             action = map_result["action"]
             helpful_links = map_result["helpful_links"]
         else:
-            retrieved_chunks = (
-                rag_service.retrieve(user_message, top_k=RAG_RETRIEVAL_TOP_K)
-                if rag_service.count() > 0
-                else []
-            )
-            retrieved_chunks = [
-                {
-                    **chunk,
-                    "metadata": chunk.get("metadata") or {},
-                }
-                for chunk in retrieved_chunks
-            ]
-            best_distance = min((chunk.get("distance", 999) for chunk in retrieved_chunks), default=None)
-
-            if best_distance is not None and best_distance <= RAG_DISTANCE_THRESHOLD:
-                rag_result = rag_service.answer_from_document(
-                    user_message,
-                    retrieved_chunks=retrieved_chunks,
-                )
-                if is_insufficient_answer(rag_result["response"]):
-                    broader_chunks = rag_service.retrieve(
-                        user_message,
-                        top_k=RAG_RETRIEVAL_TOP_K + 8,
-                    )
-                    if broader_chunks:
-                        retrieved_chunks = [
-                            {
-                                **chunk,
-                                "metadata": chunk.get("metadata") or {},
-                            }
-                            for chunk in broader_chunks
-                        ]
-                    rag_result = rag_service.answer_with_timeout(
-                        user_message,
-                        retrieved_chunks=retrieved_chunks,
-                        timeout_seconds=OLLAMA_TIMEOUT_SECONDS,
-                    )
-                response = rag_result['response']
-                sources = rag_result['sources']
+            retrieval_message = schedule_query_for_retrieval(user_message)
+            meeting_result = meeting_schedule_response(retrieval_message)
+            if meeting_result:
+                intent = meeting_result["intent"]
+                response = meeting_result["response"]
+                sources = meeting_result["sources"]
+                action = meeting_result["action"]
+                helpful_links = meeting_result["helpful_links"]
             else:
-                response = generate_fallback_response()
-                sources = []
+                retrieved_chunks = (
+                    rag_service.retrieve(retrieval_message, top_k=RAG_RETRIEVAL_TOP_K)
+                    if rag_service.count() > 0
+                    else []
+                )
+                retrieved_chunks = [
+                    {
+                        **chunk,
+                        "metadata": chunk.get("metadata") or {},
+                    }
+                    for chunk in retrieved_chunks
+                ]
+                best_distance = min((chunk.get("distance", 999) for chunk in retrieved_chunks), default=None)
+
+                if (
+                    best_distance is not None
+                    and best_distance <= RAG_DISTANCE_THRESHOLD
+                    and has_reliable_retrieval(user_message, retrieved_chunks)
+                ):
+                    rag_result = rag_service.answer_from_document(
+                        retrieval_message,
+                        retrieved_chunks=retrieved_chunks,
+                    )
+                    if is_insufficient_answer(rag_result["response"]):
+                        broader_chunks = rag_service.retrieve(
+                            retrieval_message,
+                            top_k=RAG_RETRIEVAL_TOP_K + 8,
+                        )
+                        if broader_chunks:
+                            retrieved_chunks = [
+                                {
+                                    **chunk,
+                                    "metadata": chunk.get("metadata") or {},
+                                }
+                                for chunk in broader_chunks
+                            ]
+                        rag_result = rag_service.answer_with_timeout(
+                            retrieval_message,
+                            retrieved_chunks=retrieved_chunks,
+                            timeout_seconds=OLLAMA_TIMEOUT_SECONDS,
+                        )
+                        if is_insufficient_answer(rag_result["response"]):
+                            rag_result = {
+                                "response": generate_fallback_response(),
+                                "sources": [],
+                            }
+                    response = rag_result['response']
+                    sources = rag_result['sources']
+                else:
+                    response = generate_fallback_response()
+                    sources = []
+
+        if is_insufficient_answer(response):
+            response = generate_fallback_response()
+            sources = []
+        response = filter_dated_response_by_query(user_message, response)
+        response = format_chat_response(response)
         
         return jsonify({
             'response': response,
@@ -501,6 +876,7 @@ def chat():
             'context': {
                 'topic': topic,
                 'map_action': action,
+                'campus_map_url': action.get('url') if action else None,
                 'helpful_links': helpful_links
             }
         })
